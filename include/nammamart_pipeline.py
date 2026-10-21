@@ -183,7 +183,106 @@ def run_elt(run_id):
         if inc.exists():
             incdf=pd.read_csv(inc,dtype=str,keep_default_na=False); incdf["_loaded_at"]=datetime.now(timezone.utc).isoformat(); incdf["_source_file"]=INCREMENT; incdf["_run_id"]=run_id
             con.register("inc_input",incdf)
-            con.execute("CREATE OR REPLACE TEMP TABLE inc_clean AS SELECT *,try_cast(order_ts AS TIMESTAMP) order_ts_cast,try_cast(quantity AS INTEGER) quantity_cast,try_cast(unit_price AS DOUBLE) unit_price_cast,try_cast(discount_pct AS DOUBLE) discount_pct_cast,try_cast(order_amount AS DOUBLE) order_amount_cast,try_cast(delivery_minutes AS DOUBLE) delivery_minutes_cast,upper(trim(order_status)) order_status_std,NULL::VARCHAR failure_reason,'PASS'::VARCHAR dq_status FROM inc_input")
+            con.execute("""
+                CREATE OR REPLACE TEMP TABLE inc_clean AS
+                SELECT *,
+                    try_cast(order_ts AS TIMESTAMP) AS order_ts_cast,
+                    try_cast(quantity AS INTEGER) AS quantity_cast,
+                    try_cast(unit_price AS DOUBLE) AS unit_price_cast,
+                    try_cast(discount_pct AS DOUBLE) AS discount_pct_cast,
+                    try_cast(order_amount AS DOUBLE) AS order_amount_cast,
+                    try_cast(delivery_minutes AS DOUBLE) AS delivery_minutes_cast,
+                    upper(trim(order_status)) AS order_status_std,
+                    CASE
+                        WHEN order_id IS NULL OR trim(order_id) = ''
+                            THEN 'Missing order_id'
+                        WHEN try_cast(order_ts AS TIMESTAMP) IS NULL
+                            THEN 'Invalid timestamp'
+                        WHEN try_cast(quantity AS INTEGER) IS NULL
+                             OR try_cast(quantity AS INTEGER) <= 0
+                            THEN 'Invalid quantity'
+                        WHEN upper(trim(order_status)) NOT IN
+                             ('PLACED', 'CONFIRMED', 'SHIPPED', 'DELIVERED',
+                              'CANCELLED', 'RETURNED')
+                            THEN 'Invalid order status'
+                        WHEN try_cast(discount_pct AS DOUBLE) IS NULL
+                             OR try_cast(discount_pct AS DOUBLE) NOT BETWEEN 0 AND 100
+                            THEN 'Invalid discount'
+                        WHEN try_cast(unit_price AS DOUBLE) IS NULL
+                             OR try_cast(order_amount AS DOUBLE) IS NULL
+                            THEN 'Invalid price or amount'
+                        WHEN abs(
+                            try_cast(order_amount AS DOUBLE) -
+                            try_cast(quantity AS DOUBLE) *
+                            try_cast(unit_price AS DOUBLE) *
+                            (1 - try_cast(discount_pct AS DOUBLE) / 100)
+                        ) > 0.02
+                            THEN 'Amount mismatch'
+                        WHEN NOT EXISTS (
+                            SELECT 1 FROM stg_customers c
+                            WHERE c.customer_id = inc_input.customer_id
+                        )
+                            THEN 'Unknown customer'
+                        WHEN NOT EXISTS (
+                            SELECT 1 FROM stg_products p
+                            WHERE p.product_id = inc_input.product_id
+                        )
+                            THEN 'Unknown product'
+                        WHEN NOT EXISTS (
+                            SELECT 1 FROM stg_stores s
+                            WHERE s.store_id = inc_input.store_id
+                        )
+                            THEN 'Unknown store'
+                        WHEN upper(trim(order_status)) = 'DELIVERED'
+                             AND try_cast(delivery_minutes AS DOUBLE) IS NULL
+                            THEN 'Missing delivery time'
+                        WHEN upper(trim(order_status)) = 'DELIVERED'
+                             AND try_cast(delivery_minutes AS DOUBLE) >= 120
+                            THEN 'Delivery time too long'
+                        ELSE NULL
+                    END AS failure_reason,
+                    CASE
+                        WHEN order_id IS NULL OR trim(order_id) = ''
+                          OR try_cast(order_ts AS TIMESTAMP) IS NULL
+                          OR try_cast(quantity AS INTEGER) IS NULL
+                          OR try_cast(quantity AS INTEGER) <= 0
+                          OR upper(trim(order_status)) NOT IN
+                             ('PLACED', 'CONFIRMED', 'SHIPPED', 'DELIVERED',
+                              'CANCELLED', 'RETURNED')
+                          OR try_cast(discount_pct AS DOUBLE) IS NULL
+                          OR try_cast(discount_pct AS DOUBLE) NOT BETWEEN 0 AND 100
+                          OR try_cast(unit_price AS DOUBLE) IS NULL
+                          OR try_cast(order_amount AS DOUBLE) IS NULL
+                          OR abs(
+                              try_cast(order_amount AS DOUBLE) -
+                              try_cast(quantity AS DOUBLE) *
+                              try_cast(unit_price AS DOUBLE) *
+                              (1 - try_cast(discount_pct AS DOUBLE) / 100)
+                          ) > 0.02
+                          OR NOT EXISTS (
+                              SELECT 1 FROM stg_customers c
+                              WHERE c.customer_id = inc_input.customer_id
+                          )
+                          OR NOT EXISTS (
+                              SELECT 1 FROM stg_products p
+                              WHERE p.product_id = inc_input.product_id
+                          )
+                          OR NOT EXISTS (
+                              SELECT 1 FROM stg_stores s
+                              WHERE s.store_id = inc_input.store_id
+                          )
+                          OR (
+                              upper(trim(order_status)) = 'DELIVERED'
+                              AND (
+                                  try_cast(delivery_minutes AS DOUBLE) IS NULL
+                                  OR try_cast(delivery_minutes AS DOUBLE) >= 120
+                              )
+                          )
+                        THEN 'FAIL'
+                        ELSE 'PASS'
+                    END AS dq_status
+                FROM inc_input
+            """)
             con.execute("CREATE OR REPLACE TEMP TABLE stg_orders_all AS SELECT * FROM stg_orders UNION ALL BY NAME SELECT * FROM inc_clean")
             con.execute("CREATE OR REPLACE TABLE stg_orders AS SELECT * FROM stg_orders_all QUALIFY row_number() OVER(PARTITION BY order_id ORDER BY _loaded_at DESC)=1")
             con.unregister("inc_input")
