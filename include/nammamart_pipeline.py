@@ -330,9 +330,9 @@ def run_etl(run_id):
         # Current-state ETL upsert: increment rows override earlier order versions.
         orders=pd.concat([base_orders, increment_orders], ignore_index=True).drop_duplicates("order_id", keep="last")
         payments=read_csv(FILES["payments"])
-        customers=read_csv(FILES["customers"]).drop_duplicates("customer_id")
-        products=read_csv(FILES["products"]).drop_duplicates("product_id")
-        stores=read_csv(FILES["stores"]).drop_duplicates("store_id")
+        customers_source=read_csv(FILES["customers"]); customers=customers_source.drop_duplicates("customer_id")
+        products_source=read_csv(FILES["products"]); products=products_source.drop_duplicates("product_id")
+        stores_source=read_csv(FILES["stores"]); stores=stores_source.drop_duplicates("store_id")
         issues=profile_all(run_id)
         clean,bad,order_issues=dq_orders(orders,customers,products,stores,run_id)
         issues=pd.concat([issues,order_issues],ignore_index=True)
@@ -366,8 +366,8 @@ def run_etl(run_id):
             WHERE p.order_id IS NULL OR abs(try_cast(o.order_amount AS DOUBLE)-try_cast(p.amount_paid AS DOUBLE))>0.02 OR upper(p.payment_status)!='SUCCESS'""")
         record_dq(con,run_id,"nammamart_etl_surbhi",issues,len(orders))
         record_etl_quality_scorecard(con, run_id, {
-            "orders": orders, "payments": payments,
-            "customers": customers, "products": products, "stores": stores,
+            "orders": base_orders, "payments": payments,
+            "customers": customers_source, "products": products_source, "stores": stores_source,
             "increment": increment_orders
         })
         record_run(con,run_id,"nammamart_etl_surbhi",start,len(base_orders)+len(increment_orders)+len(payments)+len(customers)+len(products)+len(stores),len(clean),len(bad),"success")
