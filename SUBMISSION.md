@@ -12,7 +12,7 @@
 - **DAG code:** [dags/](dags/)
 - **SQL transformations and six business questions:** [include/sql/](include/sql/) · [business_questions.sql](include/sql/business_questions.sql)
 - **Data issues log and run reports:** [include/reports/](include/reports/)
-- **Quarantine evidence/artifacts:** [include/quarantine/surbhi/](include/quarantine/surbhi/)
+- **Quarantine evidence:** [quarantine screenshot](screenshots/04_quarantine_failure_reasons.png); runtime quarantine CSVs are generated locally under `include/quarantine/surbhi/` and are not currently committed as static evidence files.
 - **All screenshots:** [screenshots/](screenshots/)
 
 The screenshot index at the end of this document is the single visual-evidence entry point. Screenshot links open the original PNG files in this branch. The images are evidence of the named views only; they do not substitute for the controlled-run results still identified as outstanding in the experiment table.
