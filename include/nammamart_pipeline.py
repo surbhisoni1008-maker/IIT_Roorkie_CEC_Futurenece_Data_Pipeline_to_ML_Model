@@ -230,6 +230,25 @@ def record_etl_quality_scorecard(con, run_id, frames):
     add("orders_future_timestamp", "Timeliness", orders, order_ts > pd.Timestamp.now(), "Critical")
     add("orders_stale_timestamp", "Timeliness", orders,
         order_ts.notna() & (order_ts < (pd.Timestamp.now() - pd.Timedelta(days=30))), "Warning")
+    increment = frames["increment"]
+    add("increment_required_fields", "Completeness", increment,
+        increment[["order_id","customer_id","product_id","store_id","order_ts","quantity","order_amount"]].isna().any(axis=1))
+    add("increment_unique_order_id", "Uniqueness", increment, increment["order_id"].duplicated(keep=False))
+    add("increment_allowed_status", "Validity", increment,
+        ~increment["order_status"].astype(str).str.strip().str.upper().isin(["DELIVERED","CANCELLED","RETURNED"]))
+    inc_calc = (pd.to_numeric(increment["quantity"], errors="coerce") *
+                pd.to_numeric(increment["unit_price"], errors="coerce") *
+                (1-pd.to_numeric(increment["discount_pct"], errors="coerce")/100)).round(2)
+    inc_amount = pd.to_numeric(increment["order_amount"], errors="coerce")
+    add("increment_amount_formula", "Accuracy", increment, (inc_calc-inc_amount).abs() > 0.02)
+    add("increment_master_keys", "Consistency", increment,
+        ~increment["customer_id"].isin(customers["customer_id"]) |
+        ~increment["product_id"].isin(products["product_id"]) |
+        ~increment["store_id"].isin(stores["store_id"]))
+    inc_ts = pd.to_datetime(increment["order_ts"], errors="coerce")
+    add("increment_future_timestamp", "Timeliness", increment, inc_ts > pd.Timestamp.now(), "Critical")
+    add("increment_stale_timestamp", "Timeliness", increment,
+        inc_ts.notna() & (inc_ts < (pd.Timestamp.now() - pd.Timedelta(days=30))), "Warning")
     _record_quality_checks(con, run_id, "nammamart_etl_surbhi", checks)
 
 
@@ -254,6 +273,13 @@ def record_elt_quality_scorecard(con, run_id):
         ("payments_order_key","Consistency","SELECT count(*) FROM raw_payments p WHERE NOT EXISTS (SELECT 1 FROM raw_orders o WHERE o.order_id=p.order_id)","Critical"),
         ("orders_future_timestamp","Timeliness","SELECT count(*) FROM raw_orders WHERE try_cast(order_ts AS TIMESTAMP)>current_timestamp","Critical"),
         ("orders_stale_timestamp","Timeliness","SELECT CASE WHEN max(try_cast(order_ts AS TIMESTAMP)) < current_timestamp-INTERVAL 30 DAY THEN count(*) ELSE 0 END FROM raw_orders WHERE try_cast(order_ts AS TIMESTAMP)<=current_timestamp","Warning"),
+        ("increment_required_fields","Completeness","SELECT count(*) FROM raw_orders_increment WHERE coalesce(trim(order_id),'')='' OR coalesce(trim(customer_id),'')='' OR coalesce(trim(product_id),'')='' OR coalesce(trim(store_id),'')='' OR coalesce(trim(order_ts),'')='' OR coalesce(trim(quantity),'')='' OR coalesce(trim(order_amount),'')=''","Critical"),
+        ("increment_unique_order_id","Uniqueness","SELECT count(*) FROM (SELECT order_id FROM raw_orders_increment GROUP BY order_id HAVING count(*)>1)","Critical"),
+        ("increment_allowed_status","Validity","SELECT count(*) FROM raw_orders_increment WHERE upper(trim(order_status)) NOT IN ('DELIVERED','CANCELLED','RETURNED')","Critical"),
+        ("increment_amount_formula","Accuracy","SELECT count(*) FROM raw_orders_increment WHERE abs(try_cast(order_amount AS DOUBLE)-try_cast(quantity AS DOUBLE)*try_cast(unit_price AS DOUBLE)*(1-try_cast(discount_pct AS DOUBLE)/100))>0.02","Critical"),
+        ("increment_master_keys","Consistency","SELECT count(*) FROM raw_orders_increment o WHERE NOT EXISTS (SELECT 1 FROM raw_customers c WHERE c.customer_id=o.customer_id) OR NOT EXISTS (SELECT 1 FROM raw_products p WHERE p.product_id=o.product_id) OR NOT EXISTS (SELECT 1 FROM raw_stores s WHERE s.store_id=o.store_id)","Critical"),
+        ("increment_future_timestamp","Timeliness","SELECT count(*) FROM raw_orders_increment WHERE try_cast(order_ts AS TIMESTAMP)>current_timestamp","Critical"),
+        ("increment_stale_timestamp","Timeliness","SELECT CASE WHEN max(try_cast(order_ts AS TIMESTAMP)) < current_timestamp-INTERVAL 30 DAY THEN count(*) ELSE 0 END FROM raw_orders_increment WHERE try_cast(order_ts AS TIMESTAMP)<=current_timestamp","Warning"),
     ]
     rows_checked = {
         "Completeness": sum(int(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]) for t in ["raw_orders","raw_payments","raw_customers","raw_products","raw_stores"]),
@@ -266,8 +292,9 @@ def record_elt_quality_scorecard(con, run_id):
     scorecard = []
     for name, dim, sql, severity in checks:
         failed = int(con.execute(sql).fetchone()[0])
+        checked_count = int(con.execute("SELECT count(*) FROM raw_orders_increment").fetchone()[0]) if name.startswith("increment_") else rows_checked[dim]
         scorecard.append({"check_name":name,"dimension":dim,"severity":severity,
-                          "rows_checked":rows_checked[dim],"rows_failed":failed})
+                          "rows_checked":checked_count,"rows_failed":failed})
     _record_quality_checks(con, run_id, "nammamart_elt_surbhi", scorecard)
 
 
