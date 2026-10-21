@@ -281,18 +281,25 @@ def record_elt_quality_scorecard(con, run_id):
         ("increment_future_timestamp","Timeliness","SELECT count(*) FROM raw_orders_increment WHERE try_cast(order_ts AS TIMESTAMP)>current_timestamp","Critical"),
         ("increment_stale_timestamp","Timeliness","SELECT CASE WHEN max(try_cast(order_ts AS TIMESTAMP)) < current_timestamp-INTERVAL 30 DAY THEN count(*) ELSE 0 END FROM raw_orders_increment WHERE try_cast(order_ts AS TIMESTAMP)<=current_timestamp","Warning"),
     ]
-    rows_checked = {
-        "Completeness": sum(int(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]) for t in ["raw_orders","raw_payments","raw_customers","raw_products","raw_stores"]),
-        "Uniqueness": sum(int(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]) for t in ["raw_orders","raw_payments","raw_customers","raw_products","raw_stores"]),
-        "Validity": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
-        "Accuracy": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
-        "Consistency": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
-        "Timeliness": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
-    }
+    # Report the population actually inspected by each rule, not the sum of all raw tables.
+    def source_table_for_check(name):
+        if name.startswith("increment_"):
+            return "raw_orders_increment"
+        if name.startswith("payments_") or name == "payments_order_key":
+            return "raw_payments"
+        if name.startswith("customers_"):
+            return "raw_customers"
+        if name.startswith("products_") or name == "product_price_positive":
+            return "raw_products"
+        if name.startswith("stores_"):
+            return "raw_stores"
+        return "raw_orders"
+
     scorecard = []
     for name, dim, sql, severity in checks:
         failed = int(con.execute(sql).fetchone()[0])
-        checked_count = int(con.execute("SELECT count(*) FROM raw_orders_increment").fetchone()[0]) if name.startswith("increment_") else rows_checked[dim]
+        table = source_table_for_check(name)
+        checked_count = int(con.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
         scorecard.append({"check_name":name,"dimension":dim,"severity":severity,
                           "rows_checked":checked_count,"rows_failed":failed})
     _record_quality_checks(con, run_id, "nammamart_elt_surbhi", scorecard)
