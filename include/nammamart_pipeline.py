@@ -201,9 +201,14 @@ def record_elt_observability(con, run_id, source_dir):
     if timestamps.empty:
         checks.append({"check":"freshness", "subject":"orders.csv", "status":"FAIL", "observed":None, "details":"No valid order timestamps found"})
     else:
-        age_days = (pd.Timestamp.now(tz="UTC") - timestamps.max()).total_seconds() / 86400
-        checks.append({"check":"freshness", "subject":"orders.csv", "status":"WARN" if age_days > 30 else "PASS", "observed":round(age_days, 2), "details":"Age of newest valid order timestamp in days; warning threshold is 30 days"})
-        future_count = int((timestamps > pd.Timestamp.now(tz="UTC")).sum())
+        now_utc = pd.Timestamp.now(tz="UTC")
+        future_count = int((timestamps > now_utc).sum())
+        non_future = timestamps[timestamps <= now_utc]
+        if non_future.empty:
+            checks.append({"check":"freshness", "subject":"orders.csv", "status":"WARN", "observed":None, "details":"No non-future order timestamps available to assess freshness"})
+        else:
+            age_days = (now_utc - non_future.max()).total_seconds() / 86400
+            checks.append({"check":"freshness", "subject":"orders.csv", "status":"WARN" if age_days > 30 else "PASS", "observed":round(age_days, 2), "details":"Age in days of newest non-future order timestamp; warning threshold is 30 days"})
         checks.append({"check":"future_timestamps", "subject":"orders.csv", "status":"WARN" if future_count else "PASS", "observed":future_count, "details":"Count of future order timestamps"})
     if {"store_id", "order_amount"}.issubset(orders.columns):
         orders["order_amount_numeric"] = pd.to_numeric(orders["order_amount"], errors="coerce")
