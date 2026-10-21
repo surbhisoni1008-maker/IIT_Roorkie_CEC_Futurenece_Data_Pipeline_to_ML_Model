@@ -45,13 +45,13 @@ Run the DAGs to generate issue reports under \`include/reports/\`. The profiler 
 | 3 | Incremental load | Confirm the expected 150 new IDs and 10 corrected IDs, with no duplicate current order keys | **Partial check only:** `raw_orders_increment` has 1,440 rows and 160 distinct order IDs; `stg_orders` has 2,550 rows and 2,550 distinct order IDs. The expected 150-new/10-corrected behavior has not yet been confirmed. |
 | 4 | Missing file | Retries then failure; clear file-specific error | Pending local run |
 | 5 | Five invalid order rows | Critical rows quarantined; DQ scorecard reflects failures | Pending local run |
-| 6 | Schema change | Pipeline fails visibly on missing required column | Pending local run |
+| 6 | Schema change | Pipeline fails visibly on missing required column | **Implemented, not yet experimentally verified:** ELT ingestion now checks required columns for each source CSV and raises a file-specific schema error. Run the missing-column experiment locally and capture the Airflow failure log. |
 | 7 | Volume anomaly | Warn if source volume falls >90% | Pending implementation/run |
 | 8 | Distribution drift | Investigate store-level price/revenue shift | Pending local run |
 | 9 | Stale data | Timeliness warning | Pending local run |
 | 10 | Recovery | Clear failed task; downstream tasks rerun | Pending local run |
 
-**Five observability pillars:** freshness (timestamps/future/stale checks), volume (row counts; add a 90% drop alert), schema (required-column checks; add explicit schema assertions), distribution (price/quantity profiles; add store-level thresholds), lineage (source file, run ID, order key and failure reason). Current weakest pillars are distribution and full schema-change detection until the experiments are implemented.
+**Five observability pillars:** freshness (timestamp/future checks exist; stale-data alert still pending), volume (row counts exist; 90% drop alert pending), schema (required-column assertions added to ELT ingestion; experiment still needs local verification), distribution (store-level price/revenue drift alert pending), lineage (raw ingestion metadata includes source file and run ID; evidence capture pending).
 
 ## Part G — Recommendation to Sameer (CTO)
 **Recommendation: ELT with a strict governed mart boundary, plus ETL-style validation for finance-critical outputs.** NammaMart needs raw records preserved exactly for audit, replay and late status corrections. ELT makes it easier to change rules in SQL and compare historical versions without repeatedly rebuilding source extracts. As data volume grows, a warehouse can optimise SQL and incremental transformations, while open-source DuckDB is cost-effective for this assignment's local scale. However, raw retention must never mean raw PII is broadly accessible: restrict raw tables, mask staging/marts, and quarantine bad records. Finance should consume only validated marts and reconciliation exceptions, never raw tables.
