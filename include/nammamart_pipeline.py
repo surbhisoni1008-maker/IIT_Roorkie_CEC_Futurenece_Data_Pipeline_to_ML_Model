@@ -155,7 +155,7 @@ def run_elt(run_id):
             con.execute("CREATE TABLE IF NOT EXISTS raw_orders_increment AS SELECT * FROM raw_input WHERE 1=0")
             con.execute("INSERT INTO raw_orders_increment BY NAME SELECT * FROM raw_input"); con.unregister("raw_input")
         # SQL-only staging and marts. Raw data is retained even when staging rejects it.
-        con.execute("""CREATE OR REPLACE TABLE stg_customers AS SELECT DISTINCT customer_id,full_name,
+        con.execute("""CREATE OR REPLACE TABLE stg_customers AS SELECT DISTINCT customer_id,
           CASE WHEN strpos(email,'@')>0 THEN substr(email,1,2)||'***@'||split_part(email,'@',2) ELSE '***' END email_masked,
           CASE WHEN length(regexp_replace(phone,'[^0-9]','','g'))>=4 THEN substr(regexp_replace(phone,'[^0-9]','','g'),1,2)||'******'||right(regexp_replace(phone,'[^0-9]','','g'),2) ELSE '***' END phone_masked,
           city,area,pincode,signup_date,upper(trim(loyalty_tier)) loyalty_tier,is_active FROM raw_customers""")
