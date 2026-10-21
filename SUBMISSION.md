@@ -20,6 +20,8 @@ Source CSVs are inputs and must not be manually edited. Experiments must use tem
 
 - **Schedule:** `0 9 * * 1-6` in `Asia/Kolkata` means 09:00 IST, Monday through Saturday. It does not schedule a Sunday run.
 - **Catch-up:** `catchup=False` prevents Airflow from automatically creating runs for all missed historical intervals when the DAG is first enabled.
+- **UTC conversion:** 09:00 Asia/Kolkata is 03:30 UTC. If the cron were interpreted in UTC instead of Asia/Kolkata, a 09:00 cron would run at 14:30 IST, five hours and thirty minutes late.
+- **Host downtime:** with local Astro/Docker stopped, the scheduler cannot run the job at 09:00. It will not provide an on-time report while the host is off; use an always-on runtime and alert on missed/failed runs in production.
 - **Retries:** each DAG allows two retries with a three-minute delay. This helps with transient failures; it will not repair bad source data or a persistent schema error.
 - **Dependencies:** the six source/schema-check tasks feed the main transform/load task. A final audit task uses `all_done` so it can attempt to record an audit outcome after the main task finishes.
 - **Operational limitation:** the local Astro/Docker scheduler can run only while the host and Docker environment are available. Production scheduling needs an always-on orchestrator, alerting, and a documented recovery process.
@@ -36,6 +38,22 @@ The profiler writes a per-run column-level summary and flags nulls and duplicate
 | Reconciliation exceptions | Payment/order amount mismatches, missing payments, and unsuccessful payment statuses are represented in reconciliation tables. | Review exceptions with Finance; do not silently force payment totals to match. |
 
 **Open questions for the business:** confirm the policy for negative quantities/returns, whether late return status changes restate the original order date or book a reversal on the return date, and the matching tolerance/allocation policy for partial or split payments.
+
+
+### Source profiling results (source files left unchanged)
+
+The following counts are from a direct profile of the six supplied CSV exports. “Duplicate-key rows” counts every row whose business key appears more than once, not the number of duplicate groups. Date-based future checks are time-dependent; the run report records five future order timestamps for the observed run.
+
+| Source file | Rows × columns | Nulls / notable values | Duplicate-key rows | Quality findings and dimension |
+|---|---:|---|---:|---|
+| `orders.csv` | 2,412 × 13 | `order_ts`: 1; `customer_id`: 18; `delivery_minutes`: 164 | `order_id`: 24 | Completeness: missing order/customer/delivery fields. Uniqueness: repeated order IDs. Validity: 3 invalid statuses, 3 invalid payment modes, 3 discounts outside 0–100. Accuracy: 10 non-positive quantities, 18 amount-formula mismatches. Consistency: 9 unknown product keys and 5 unknown store keys; customer-key exceptions also appear. Timeliness: future timestamps. |
+| `payments.csv` | 2,228 × 7 | `gateway_ref`: 301 | `payment_id`: 8 | Completeness: missing gateway references. Uniqueness: repeated payment IDs. Validity/accuracy: source includes non-standard payment modes/statuses and negative amounts. Consistency: 8 payment rows refer to order IDs absent from the base orders file. |
+| `customers.csv` | 405 × 10 | `city`: 6 | `customer_id`: 10 | Completeness: missing city. Uniqueness: repeated customer IDs. Validity/timeliness: inconsistent loyalty-tier casing and 3 future signup dates. PII fields include name, email, phone and location attributes. |
+| `products.csv` | 152 × 10 | `category`: 3 | `product_id`: 4 | Completeness: missing category. Uniqueness: repeated product IDs. Accuracy: 1 non-positive MRP and 5 rows where cost price exceeds MRP. |
+| `stores.csv` | 15 × 8 | `zone`: 1 | `store_id`: 0 | Completeness: missing zone. Accuracy/validity: 1 non-positive daily capacity. |
+| `orders_2026-10-01_increment.csv` | 160 × 13 | No blank fields detected in the basic null scan | `order_id`: 0 | Incremental feed includes later versions of existing orders as well as new orders. Validate status corrections and latest-version-wins behaviour separately from base-file duplicate checks. |
+
+These are profiling findings, not instructions to alter source data. The pipeline should preserve the raw exports and record each row-level rejection with a reason. Some row counts overlap because one row can violate more than one rule.
 
 ## 2. Profiling and issue handling
 
@@ -84,6 +102,26 @@ Operations owns orders and store master data; Finance owns payment records and r
 | `mart_delivery_sla` | `avg_delivery_minutes`, `pct_within_15_min` | Store delivery performance | No |
 | `mart_payment_reconciliation` | `order_id`, `order_amount`, `amount_paid`, `failure_reason` | Payment/order exceptions | Order identifier only |
 | `mart_top_customers` | `customer_id`, `loyalty_tier`, `spend` | Top customers by delivered spend; no contact details | Customer key is linkable |
+
+### Governance decisions against the nine client questions
+
+1. **Ownership and rule approval.** Operations owns orders and store master data; Finance owns payments, revenue definitions and reconciliation tolerance; CRM owns customer records; Merchandising owns product catalogue/prices; Data Engineering owns warehouse models, orchestration and scorecards. The relevant owner and Finance must approve a financial-rule change, with a dated/versioned decision recorded before deployment.
+
+2. **Data dictionary and semantics.** Source types are inferred at ingestion and cast in staging: IDs are strings, timestamps/dates are timestamp/date types, counts/quantities are integers, and prices/amounts/percentages are numeric decimals/doubles. Order statuses are DELIVERED/CANCELLED/RETURNED; payment modes are UPI/Card/Cash on Delivery/Wallet; customer email, phone, name, city, area and pincode are personal or potentially identifying data. The warehouse dictionary above identifies each reporting table's source and PII exposure; raw tables retain the original source representation.
+
+3. **Lineage.** To trace a KPI, filter `etl_fact_orders` or `mart_daily_store_kpis` to one `order_date`/store and join its `order_id` values back to `orders.csv`; join `store_id` to `stores.csv` to validate the zone. ELT is easier to audit because raw rows retain `_source_file` and `_run_id`; for production, carry a source-row/order-ID bridge through aggregates so an auditor can reproduce the exact contributing IDs.
+
+4. **Personal data and law.** Treat `full_name`, `email`, `phone`, `city`, `area`, `pincode`, and linkable customer IDs as personal or potentially identifying data. Mask email/phone in reporting tables rather than deleting all linkage, because authorised support/audit may need a controlled join; expose only the minimum fields needed. The Digital Personal Data Protection Act, 2023 and applicable rules should be assessed with counsel for notice, lawful processing, security safeguards, retention/deletion and data-principal rights.
+
+5. **Access control.** Raw tables and raw customer files should be limited to authorised data operators and auditors under least privilege; staging should be limited to data engineering/quality operators; marts should be the default business-consumer surface; quarantine should be restricted to staff resolving data issues. Do not grant broad analyst access to unmasked raw customer contact/location data.
+
+6. **Retention.** Adopt a written, purpose-based schedule approved by Legal and Finance rather than inventing a universal duration: retain raw data only as long as required for audit/business/legal obligations, quarantine until remediation plus the approved audit window, and masked/aggregated reporting data according to reporting needs. At expiry, delete securely or irreversibly anonymise; document legal holds and deletion runs.
+
+7. **Secrets.** This local assignment does not require a live API secret. If alerts are enabled, store credentials in Airflow Connections/Variables or a supported secret backend, and read them at runtime. Never place tokens, passwords, or webhook URLs in DAG source, screenshots, logs, or Git history.
+
+8. **Rejected-order audit.** Select an order ID from the quarantine CSV, read the original row from `orders.csv`, and match its `failure_reason` to the quality rule and `dq_results` row for that run. Then query the ETL fact table and ELT validated mart/staging status for the same ID to show it is excluded from delivered revenue; keep the original raw ELT row for audit.
+
+9. **Late return / change history.** The current-state model uses the latest increment version, so an order changed to RETURNED is excluded from current delivered-order revenue even if its original timestamp is in September. Finance may need both a current restated view and an as-known-at-the-time view; retain append-only raw versions and add effective/recorded timestamps or a history table to reproduce both.
 
 ### Lineage, privacy, access, retention, and secrets
 A store's daily revenue starts with an order row in `orders.csv`, passes ETL order validation or ELT staging rules, joins to `stores.csv` for the zone/store attributes, and is grouped by order date and store in the corresponding daily mart. ELT raw tables retain source-file and run metadata; rejected orders can be traced to their staging failure reason. ETL's issue/quarantine files identify rejected order keys and reasons.
