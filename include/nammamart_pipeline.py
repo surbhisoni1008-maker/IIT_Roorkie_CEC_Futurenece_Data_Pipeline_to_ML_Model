@@ -398,7 +398,21 @@ def run_etl(run_id):
         issues=pd.concat([issues,order_issues],ignore_index=True)
         if not issues.empty: issues.to_csv(ROOT/"include"/"reports"/f"data_issues_{run_id.replace(':','_')}.csv",index=False)
         if not bad.empty:
-            bad=bad.copy(); bad["failure_reason"]="See data_issues report for order_id"
+            bad = bad.copy()
+            # Preserve the actual validation messages for each quarantined order.
+            # Multiple failed checks for the same order are combined into one reason.
+            if not order_issues.empty:
+                reason_by_key = (
+                    order_issues.groupby("row_key")["problem"]
+                    .agg(lambda problems: "; ".join(dict.fromkeys(str(p) for p in problems)))
+                    .to_dict()
+                )
+            else:
+                reason_by_key = {}
+            bad["failure_reason"] = bad["order_id"].astype(str).map(reason_by_key)
+            bad["failure_reason"] = bad["failure_reason"].fillna(
+                "Rejected by data-quality validation; see data_issues report"
+            )
             bad.to_csv(ROOT/"include"/"quarantine"/"surbhi"/f"orders_failed_{run_id.replace(':','_')}.csv",index=False)
         for name, frame in [("etl_dim_customer",customers),("etl_dim_product",products),("etl_dim_store",stores)]:
             frame=frame.copy()
