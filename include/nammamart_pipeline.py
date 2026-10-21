@@ -320,7 +320,11 @@ def execute_sql_file(con, filename):
     sql_path = ROOT / "include" / "sql" / filename
     if not sql_path.exists():
         raise FileNotFoundError(f"SQL transformation file not found: {sql_path}")
-    con.execute(sql_path.read_text(encoding="utf-8"))
+    sql_text = sql_path.read_text(encoding="utf-8")
+    # These checked-in assignment SQL files use semicolons only as statement delimiters.
+    for statement in sql_text.split(";"):
+        if statement.strip():
+            con.execute(statement)
 
 
 def quarantine_source_frames(run_id, source_frames):
