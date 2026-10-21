@@ -38,6 +38,23 @@ def append_new_raw_rows(con, table, frame):
         "INSERT INTO " + table + " BY NAME SELECT DISTINCT incoming.* FROM raw_input AS incoming "
         "WHERE NOT EXISTS (SELECT 1 FROM " + table + " AS existing WHERE " + match + ")"
     )
+def check_required_columns(frame, required, source_name):
+    """Raise a clear error when a source export loses required columns."""
+    missing = sorted(set(required) - set(frame.columns))
+    if missing:
+        raise ValueError(f"Schema check failed for {source_name}: missing required columns {missing}")
+
+
+def write_observability_report(run_id, checks):
+    """Persist observable warnings/checks as a CSV artifact."""
+    ensure_dirs()
+    report = pd.DataFrame(checks)
+    report["run_id"] = run_id
+    report["checked_at_utc"] = datetime.now(timezone.utc).isoformat()
+    report.to_csv(ROOT / "include" / "reports" / f"observability_{run_id.replace(':', '_')}.csv", index=False)
+    return report
+
+
 def read_csv(name, dtype=None):
     return pd.read_csv(data_dir() / name, dtype=dtype, keep_default_na=True)
 def mask_email(v):
