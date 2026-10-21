@@ -5,6 +5,18 @@
 **Warehouse:** `include/warehouse_surbhi.duckdb`  
 **DAGs:** `nammamart_etl_surbhi`, `nammamart_elt_surbhi`
 
+
+## Reviewer quick navigation
+
+- **Original assignment / acceptance criteria:** [ASSIGNMENT.md](https://github.com/UmashankarKH/IIT_Roorkie_CEC_Futurenece_Data_Pipeline_to_ML_Model/blob/main/assignment/ASSIGNMENT.md)
+- **DAG code:** [dags/](dags/)
+- **SQL transformations and six business questions:** [include/sql/](include/sql/) · [business_questions.sql](include/sql/business_questions.sql)
+- **Data issues log and run reports:** [include/reports/](include/reports/)
+- **Quarantine evidence/artifacts:** [include/quarantine/surbhi/](include/quarantine/surbhi/)
+- **All screenshots:** [screenshots/](screenshots/)
+
+The screenshot index at the end of this document is the single visual-evidence entry point. Screenshot links open the original PNG files in this branch. The images are evidence of the named views only; they do not substitute for the controlled-run results still identified as outstanding in the experiment table.
+
 ## 1. Solution overview
 
 This submission implements two comparable pipelines over the same six source exports.
@@ -198,3 +210,21 @@ Top risks are (1) an incorrect SQL rule contaminating a mart if quality gates ar
 | No secrets or unmasked PII outside the source-data directory | Source data is in the assignment-approved `include/data/nammamart/` location | Review code/history before final submission; do not add local database or unrelated personal files |
 
 The SQL file contains ETL and ELT queries for each of the six business questions, plus scorecard/audit queries. The screenshots establish the specific views named above; they do not by themselves prove every controlled fault-injection experiment was executed.
+
+### Screenshot gallery — one place for evaluation
+
+Click any image to open the full-size PNG. These files are committed in [screenshots/](screenshots/).
+
+| Evidence | Screenshot |
+|---|---|
+| ELT DAG Graph view — successful run | [![ELT DAG Graph success](screenshots/01_elt_dag_graph_success.png)](screenshots/01_elt_dag_graph_success.png) |
+| ETL DAG Graph view — successful run | [![ETL DAG Graph success](screenshots/02_etl_dag_graph_success.png)](screenshots/02_etl_dag_graph_success.png) |
+| Airflow DAG schedule | [![Airflow schedule](screenshots/03_airflow_dags_schedule.png)](screenshots/03_airflow_dags_schedule.png) |
+| Quarantine output with failure reasons | [![Quarantine failure reasons](screenshots/04_quarantine_failure_reasons.png)](screenshots/04_quarantine_failure_reasons.png) |
+| Pipeline report example | [![Pipeline report](screenshots/05_pipeline_report_example.png)](screenshots/05_pipeline_report_example.png) |
+| dq_results and pipeline_runs SQL evidence | [![DQ results and pipeline runs](screenshots/06_sql_dq_results_and_pipeline_runs.png)](screenshots/06_sql_dq_results_and_pipeline_runs.png) |
+| Pipeline audit and reconciliation SQL evidence | [![Pipeline audit and reconciliation](screenshots/07_sql_pipeline_audit_and_reconciliation.png)](screenshots/07_sql_pipeline_audit_and_reconciliation.png) |
+| ETL vs ELT payment reconciliation | [![ETL and ELT payment reconciliation](screenshots/08_sql_payment_reconciliation_etl_elt.png)](screenshots/08_sql_payment_reconciliation_etl_elt.png) |
+
+**Important evaluation note:** the current screenshots cover DAG success, schedule, quarantine, pipeline reporting, scorecard/audit tables, and payment reconciliation. They do **not** individually show the result sets for all six business questions or prove that all ten controlled observability experiments were executed. The experiment table above intentionally distinguishes implementation from a separately recorded controlled run; add experiment logs/result captures before marking those items as fully demonstrated.
+
