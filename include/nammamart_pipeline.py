@@ -13,6 +13,14 @@ FILES = {
     "products": "products.csv", "stores": "stores.csv"
 }
 INCREMENT = "orders_2026-10-01_increment.csv"
+REQUIRED_COLUMNS = {
+    "orders.csv": {"order_id", "customer_id", "product_id", "store_id", "order_ts", "quantity", "unit_price", "discount_pct", "order_amount", "order_status", "delivery_minutes"},
+    "payments.csv": {"payment_id", "order_id", "payment_ts", "payment_mode", "amount_paid", "payment_status"},
+    "customers.csv": {"customer_id", "email", "phone", "city", "area", "pincode", "signup_date", "loyalty_tier", "is_active"},
+    "products.csv": {"product_id", "product_name", "category", "sub_category", "brand", "mrp", "cost_price", "unit", "is_perishable", "launch_date"},
+    "stores.csv": {"store_id", "store_name", "zone", "area", "pincode", "open_date", "manager_name", "capacity_orders_per_day"},
+    INCREMENT: {"order_id", "customer_id", "product_id", "store_id", "order_ts", "quantity", "unit_price", "discount_pct", "order_amount", "order_status", "delivery_minutes"},
+}
 WAREHOUSE = ROOT / "include" / "warehouse_surbhi.duckdb"
 def data_dir():
     for p in DATA_CANDIDATES:
@@ -174,6 +182,7 @@ def run_elt(run_id):
         d=data_dir()
         for logical, fn in FILES.items():
             raw=pd.read_csv(d/fn,dtype=str,keep_default_na=False)
+            check_required_columns(raw, REQUIRED_COLUMNS[fn], fn)
             raw["_loaded_at"]=datetime.now(timezone.utc).isoformat(); raw["_source_file"]=fn; raw["_run_id"]=run_id
             extracted+=len(raw)
             con.register("raw_input",raw)
@@ -184,7 +193,7 @@ def run_elt(run_id):
         # Raw increment is append-only; typed staging is upserted on order_id.
         inc=d/INCREMENT
         if inc.exists():
-            raw=pd.read_csv(inc,dtype=str,keep_default_na=False); raw["_loaded_at"]=datetime.now(timezone.utc).isoformat(); raw["_source_file"]=INCREMENT; raw["_run_id"]=run_id
+            raw=pd.read_csv(inc,dtype=str,keep_default_na=False); check_required_columns(raw, REQUIRED_COLUMNS[INCREMENT], INCREMENT); raw["_loaded_at"]=datetime.now(timezone.utc).isoformat(); raw["_source_file"]=INCREMENT; raw["_run_id"]=run_id
             extracted+=len(raw); con.register("raw_input",raw)
             con.execute("CREATE TABLE IF NOT EXISTS raw_orders_increment AS SELECT * FROM raw_input WHERE 1=0")
             append_new_raw_rows(con, "raw_orders_increment", raw); con.unregister("raw_input")
