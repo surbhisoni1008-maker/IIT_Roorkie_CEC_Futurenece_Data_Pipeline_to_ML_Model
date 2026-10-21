@@ -53,6 +53,8 @@ The following counts are from a direct profile of the six supplied CSV exports. 
 | `stores.csv` | 15 × 8 | `zone`: 1 | `store_id`: 0 | Completeness: missing zone. Accuracy/validity: 1 non-positive daily capacity. |
 | `orders_2026-10-01_increment.csv` | 160 × 13 | No blank fields detected in the basic null scan | `order_id`: 0 | Incremental feed includes later versions of existing orders as well as new orders. Validate status corrections and latest-version-wins behaviour separately from base-file duplicate checks. |
 
+A row-keyed, issue-level log with file, row key, column, problem, quality dimension, proposed rule, and severity is committed at [`include/reports/data_issues_initial_profile.csv`](include/reports/data_issues_initial_profile.csv). It was generated from the supplied source snapshot; it contains issue descriptions and keys, not raw customer contact details.
+
 These are profiling findings, not instructions to alter source data. The pipeline should preserve the raw exports and record each row-level rejection with a reason. Some row counts overlap because one row can violate more than one rule.
 
 ## 2. Profiling and issue handling
