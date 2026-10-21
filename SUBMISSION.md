@@ -1,0 +1,95 @@
+# NammaMart ETL & ELT — Submission notes
+**Owner:** Surbhi Soni  
+**Repository:** https://github.com/surbhisoni1008-maker/IIT_Roorkie_CEC_Futurenece_Data_Pipeline_to_ML_Model  
+**Status:** Implementation draft; local Airflow execution and the ten UI experiments still need to be run and evidenced.
+
+## Architecture
+- ETL DAG: \`nammamart_etl_surbhi\`; validates orders in Python, quarantines rejected orders, masks customer email/phone in reporting dimensions, and writes a DuckDB star-schema-style fact and summary tables.
+- ELT DAG: \`nammamart_elt_surbhi\`; preserves raw exports with ingestion metadata, uses DuckDB SQL for staging and marts, and processes the increment file with newest-row-wins staging deduplication.
+- Warehouse: \`include/warehouse_surbhi.duckdb\`. Source CSVs are read-only inputs.
+- Schedule: \`0 9 * * 1-6\`, timezone \`Asia/Kolkata\`; 09:00 IST is 03:30 UTC. \`catchup=False\` avoids backfilling old scheduled runs. If Docker/laptop is off, local Airflow cannot run on time; start it and trigger/recover the missed run.
+
+## Part 0 — Data profiling and issue log
+Run the DAGs to generate issue reports under \`include/reports/\`. The profiler checks nulls and duplicate keys for all six files; order validation checks required identifiers, quantity, status, timestamp, discount, calculated amount, master keys, delivered-order duration, and future timestamps. Expand this log after inspecting all source-level anomalies.
+
+| Question to clarify with client | Why it matters |
+|---|---|
+| Does a negative quantity represent a return, or always a data-entry error? | Prevents incorrect rejection or revenue calculation. |
+| Should a RETURNED order reverse revenue in the original order date or in the return date? | Determines historical finance reporting and restatement policy. |
+| What tolerance and matching policy should Finance use for split/partial payments? | Prevents false reconciliation failures. |
+
+## Part C — Scheduling
+- Cron: \`0 9 * * 1-6\` (Monday–Saturday at 09:00).
+- Explicit timezone: \`Asia/Kolkata\`; 09:00 IST = 03:30 UTC.
+- UTC start date without a timezone would shift the intended local execution time by 5 hours 30 minutes.
+- Local Airflow requires the computer and Docker to be running. For production, use a continuously available host and alert on missed/failed runs.
+
+## Part E — Governance
+1. **Ownership:** Operations owns orders and store master; Finance owns payment records and reconciliation policy; CRM owns customer records; Merchandising owns product catalogue; Analytics/Data Engineering owns warehouse transformations. Business owners approve rule changes with Finance/Ops sign-off.
+2. **Dictionary:** \`etl_fact_orders\` contains order identifiers, timestamps, keys, quantities, prices, statuses, derived revenue/margin and SLA flag. \`etl_dim_customer\` contains customer key, masked email/phone and loyalty attributes. Product and store dimensions contain catalogue and location attributes. Raw source columns should be treated as sensitive where applicable.
+3. **Lineage:** \`etl_daily_zone_revenue\` is derived from validated order rows joined to store zone, then grouped by order date and zone. ETL makes rejected rows explicit through the issues report; ELT retains the original row in raw tables and links it to staging status.
+4. **Personal data:** Customer name, email, phone, and potentially address/area/pincode are personal data. Reporting email/phone are masked rather than removed to support limited matching and customer-level analysis. India's Digital Personal Data Protection Act, 2023 and applicable rules should be assessed for lawful purpose, notice, safeguards, retention and data-principal rights.
+5. **Access:** Raw customer PII should be limited to authorised CRM/engineering operators; staging access is restricted; business users receive masked marts. Quarantine contains source values and needs similarly restricted access.
+6. **Retention:** Propose a documented, purpose-based retention schedule approved by Legal/Finance; delete or irreversibly anonymise after expiry, except records subject to legal holds.
+7. **Secrets:** Use Airflow Connections/Variables or a managed secret backend. Never commit credentials, webhook URLs, or access tokens.
+8. **Audit:** Find the order in raw source, inspect its staging/ETL failure reason, and confirm the rejected key is absent from finance fact/mart queries.
+9. **Change history:** The increment should update the current status to RETURNED without duplicate order keys. Finance should use current net revenue for restated reporting and preserve an immutable raw/audit history to explain previous snapshots.
+
+## Part F — Observability experiment log
+**Do not claim these were observed until they have been run in Airflow.** Record the real result, screenshot/log/table, and fix after each experiment.
+
+| # | Experiment | Expected | Observed / evidence |
+|---|---|---|---|
+| 1 | Happy path | DAG green; counts recorded | Pending local run |
+| 2 | Idempotency | ETL fact count stable; ELT raw grows by each ingestion; staging keys stable | Pending local run |
+| 3 | Incremental load | 150 new IDs and 10 corrected IDs, no duplicate current order keys | Pending local run |
+| 4 | Missing file | Retries then failure; clear file-specific error | Pending local run |
+| 5 | Five invalid order rows | Critical rows quarantined; DQ scorecard reflects failures | Pending local run |
+| 6 | Schema change | Pipeline fails visibly on missing required column | Pending local run |
+| 7 | Volume anomaly | Warn if source volume falls >90% | Pending implementation/run |
+| 8 | Distribution drift | Investigate store-level price/revenue shift | Pending local run |
+| 9 | Stale data | Timeliness warning | Pending local run |
+| 10 | Recovery | Clear failed task; downstream tasks rerun | Pending local run |
+
+**Five observability pillars:** freshness (timestamps/future/stale checks), volume (row counts; add a 90% drop alert), schema (required-column checks; add explicit schema assertions), distribution (price/quantity profiles; add store-level thresholds), lineage (source file, run ID, order key and failure reason). Current weakest pillars are distribution and full schema-change detection until the experiments are implemented.
+
+## Part G — Recommendation to Sameer (CTO)
+**Recommendation: ELT with a strict governed mart boundary, plus ETL-style validation for finance-critical outputs.** NammaMart needs raw records preserved exactly for audit, replay and late status corrections. ELT makes it easier to change rules in SQL and compare historical versions without repeatedly rebuilding source extracts. As data volume grows, a warehouse can optimise SQL and incremental transformations, while open-source DuckDB is cost-effective for this assignment's local scale. However, raw retention must never mean raw PII is broadly accessible: restrict raw tables, mask staging/marts, and quarantine bad records. Finance should consume only validated marts and reconciliation exceptions, never raw tables.
+**Top risks:** (1) a flawed SQL rule can contaminate marts if quality gates are bypassed; (2) unrestricted raw data creates privacy risk; (3) a laptop-hosted warehouse does not provide production availability, alerting or concurrent-user capacity. A production deployment should add CI tests, alerting, access controls, backups, and a managed/continuously available runtime.
+
+## Business questions — SQL starter queries
+\`\`\`sql
+-- 1. Daily revenue by zone/store
+SELECT order_date, zone, store_id, store_name, SUM(net_revenue) revenue
+FROM etl_fact_orders GROUP BY ALL ORDER BY 1,2,3;
+
+-- 2. Revenue and margin by category
+SELECT category, SUM(net_revenue) revenue, SUM(gross_margin) gross_margin
+FROM etl_fact_orders GROUP BY category ORDER BY revenue DESC;
+
+-- 3. Average delivery and <=15-minute share
+SELECT store_id, store_name, AVG(try_cast(delivery_minutes AS DOUBLE)) avg_minutes,
+       AVG(CASE WHEN within_15_min THEN 1.0 ELSE 0 END)*100 pct_within_15
+FROM etl_fact_orders WHERE order_status='DELIVERED' GROUP BY ALL;
+
+-- 4. Payment mode and reconciliation exceptions
+SELECT payment_mode, SUM(net_revenue) revenue FROM etl_fact_orders GROUP BY payment_mode;
+SELECT * FROM etl_payment_reconciliation;
+
+-- 5. Top customers (masked contact details are not selected)
+SELECT customer_id, loyalty_tier, SUM(net_revenue) spend
+FROM etl_fact_orders GROUP BY ALL ORDER BY spend DESC LIMIT 10;
+
+-- 6. Rejections by file and reason
+SELECT file, problem, COUNT(*) issue_count
+FROM read_csv_auto('include/reports/data_issues_*.csv', union_by_name=true)
+GROUP BY ALL ORDER BY issue_count DESC;
+\`\`\`
+
+## Before submission
+- [ ] Install/start Docker Desktop and Astro CLI on Windows.
+- [ ] Copy the six CSVs to \`include/data/nammamart/\`.
+- [ ] Add \`pandas\`, \`duckdb\` to \`requirements.txt\`; restart Astro.
+- [ ] Run \`astro dev run dags list-import-errors\`, then trigger both DAGs.
+- [ ] Fix any import/runtime issues and verify DuckDB table counts and PII masking.
+- [ ] Run all ten experiments, record actual observations, and capture required Airflow screenshots.
