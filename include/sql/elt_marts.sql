@@ -1,4 +1,4 @@
--- SQL marts built from validated staging data; executed by run_elt.
+-- SQL marts built from validated staging data and executed by run_elt.
 CREATE OR REPLACE TABLE mart_daily_store_kpis AS
 SELECT CAST(o.order_ts_cast AS DATE) AS order_date, s.zone, s.store_id, s.store_name,
        SUM(CASE WHEN o.order_status_std='DELIVERED' THEN o.order_amount_cast ELSE 0 END) AS net_revenue,
