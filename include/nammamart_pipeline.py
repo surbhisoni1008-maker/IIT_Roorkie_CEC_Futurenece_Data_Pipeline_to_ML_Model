@@ -132,10 +132,122 @@ def record_dq(con, run_id, dag_id, issues, rows_checked):
 def record_run(con, run_id, dag_id, start, extracted, loaded, quarantined, status):
     con.execute("""CREATE TABLE IF NOT EXISTS pipeline_runs(run_id VARCHAR,dag_id VARCHAR,start_time TIMESTAMP,end_time TIMESTAMP,rows_extracted BIGINT,rows_loaded BIGINT,rows_quarantined BIGINT,status VARCHAR)""")
     con.execute("INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?,?,?)",[run_id,dag_id,start,datetime.now(timezone.utc).replace(tzinfo=None),extracted,loaded,quarantined,status])
+
+def _record_quality_checks(con, run_id, dag_id, checks):
+    """Persist one auditable result per quality rule for every pipeline run."""
+    con.execute("""CREATE TABLE IF NOT EXISTS dq_results(
+        run_id VARCHAR, dag_id VARCHAR, check_name VARCHAR, dimension VARCHAR,
+        severity VARCHAR, rows_checked BIGINT, rows_failed BIGINT, status VARCHAR,
+        checked_at TIMESTAMP)""")
+    checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    for item in checks:
+        failed = int(item["rows_failed"])
+        severity = item.get("severity", "Critical")
+        status = "FAIL" if failed and severity == "Critical" else ("WARN" if failed else "PASS")
+        con.execute("INSERT INTO dq_results VALUES (?,?,?,?,?,?,?,?,?)", [
+            run_id, dag_id, item["check_name"], item["dimension"], severity,
+            int(item["rows_checked"]), failed, status, checked_at
+        ])
+
+
+def _count_bad(frame, mask):
+    return int(mask.fillna(True).sum()) if hasattr(mask, "fillna") else int(mask.sum())
+
+
+def record_etl_quality_scorecard(con, run_id, frames):
+    """Python-side checks across all five source files and the increment feed."""
+    orders, payments = frames["orders"], frames["payments"]
+    customers, products, stores = frames["customers"], frames["products"], frames["stores"]
+    checks = []
+    def add(name, dim, frame, mask, severity="Critical"):
+        checks.append({"check_name": name, "dimension": dim, "severity": severity,
+                       "rows_checked": len(frame), "rows_failed": _count_bad(frame, mask)})
+    add("orders_required_fields", "Completeness", orders,
+        orders[["order_id","customer_id","product_id","store_id","order_ts","quantity","order_amount"]].isna().any(axis=1))
+    add("payments_required_fields", "Completeness", payments,
+        payments[["payment_id","order_id","payment_ts","amount_paid","payment_status"]].isna().any(axis=1))
+    add("customers_required_fields", "Completeness", customers,
+        customers[["customer_id","city","signup_date"]].isna().any(axis=1))
+    add("products_required_fields", "Completeness", products,
+        products[["product_id","product_name","category","mrp","cost_price"]].isna().any(axis=1))
+    add("stores_required_fields", "Completeness", stores,
+        stores[["store_id","store_name","zone","capacity_orders_per_day"]].isna().any(axis=1))
+    add("orders_unique_order_id", "Uniqueness", orders, orders["order_id"].duplicated(keep=False))
+    add("payments_unique_payment_id", "Uniqueness", payments, payments["payment_id"].duplicated(keep=False))
+    add("customers_unique_customer_id", "Uniqueness", customers, customers["customer_id"].duplicated(keep=False))
+    add("products_unique_product_id", "Uniqueness", products, products["product_id"].duplicated(keep=False))
+    add("stores_unique_store_id", "Uniqueness", stores, stores["store_id"].duplicated(keep=False))
+    status_ok = orders["order_status"].astype(str).str.strip().str.upper().isin(["DELIVERED","CANCELLED","RETURNED"])
+    add("orders_allowed_status", "Validity", orders, ~status_ok)
+    add("payments_allowed_mode", "Validity", payments,
+        ~payments["payment_mode"].astype(str).str.strip().str.upper().isin(["UPI","CARD","CASH ON DELIVERY","WALLET"]))
+    add("customer_email_format", "Validity", customers,
+        ~customers["email"].astype(str).str.match(r"^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", na=False), "Warning")
+    add("product_price_positive", "Accuracy", products,
+        (pd.to_numeric(products["mrp"], errors="coerce") <= 0) |
+        (pd.to_numeric(products["cost_price"], errors="coerce") <= 0))
+    calc = (pd.to_numeric(orders["quantity"], errors="coerce") *
+            pd.to_numeric(orders["unit_price"], errors="coerce") *
+            (1-pd.to_numeric(orders["discount_pct"], errors="coerce")/100)).round(2)
+    amount = pd.to_numeric(orders["order_amount"], errors="coerce")
+    add("orders_amount_formula", "Accuracy", orders, (calc-amount).abs() > 0.02)
+    add("orders_master_keys", "Consistency", orders,
+        ~orders["customer_id"].isin(customers["customer_id"]) |
+        ~orders["product_id"].isin(products["product_id"]) |
+        ~orders["store_id"].isin(stores["store_id"]))
+    add("payments_order_key", "Consistency", payments, ~payments["order_id"].isin(orders["order_id"]))
+    order_ts = pd.to_datetime(orders["order_ts"], errors="coerce")
+    add("orders_future_timestamp", "Timeliness", orders, order_ts > pd.Timestamp.now(), "Critical")
+    add("orders_stale_timestamp", "Timeliness", orders,
+        order_ts.notna() & (order_ts < (pd.Timestamp.now() - pd.Timedelta(days=30))), "Warning")
+    _record_quality_checks(con, run_id, "nammamart_etl_surbhi", checks)
+
+
+def record_elt_quality_scorecard(con, run_id):
+    """SQL-side scorecard: rules execute against raw/staging DuckDB tables."""
+    checks = [
+        ("orders_required_fields","Completeness","SELECT count(*) FROM raw_orders WHERE coalesce(trim(order_id),'')='' OR coalesce(trim(customer_id),'')='' OR coalesce(trim(product_id),'')='' OR coalesce(trim(store_id),'')='' OR coalesce(trim(order_ts),'')='' OR coalesce(trim(quantity),'')='' OR coalesce(trim(order_amount),'')=''","Critical"),
+        ("payments_required_fields","Completeness","SELECT count(*) FROM raw_payments WHERE coalesce(trim(payment_id),'')='' OR coalesce(trim(order_id),'')='' OR coalesce(trim(payment_ts),'')='' OR coalesce(trim(amount_paid),'')=''","Critical"),
+        ("customers_required_fields","Completeness","SELECT count(*) FROM raw_customers WHERE coalesce(trim(customer_id),'')='' OR coalesce(trim(city),'')='' OR coalesce(trim(signup_date),'')=''","Critical"),
+        ("products_required_fields","Completeness","SELECT count(*) FROM raw_products WHERE coalesce(trim(product_id),'')='' OR coalesce(trim(product_name),'')='' OR coalesce(trim(category),'')=''","Critical"),
+        ("stores_required_fields","Completeness","SELECT count(*) FROM raw_stores WHERE coalesce(trim(store_id),'')='' OR coalesce(trim(store_name),'')='' OR coalesce(trim(zone),'')=''","Critical"),
+        ("orders_unique_order_id","Uniqueness","SELECT count(*) FROM (SELECT order_id FROM raw_orders GROUP BY order_id HAVING count(*)>1)","Critical"),
+        ("payments_unique_payment_id","Uniqueness","SELECT count(*) FROM (SELECT payment_id FROM raw_payments GROUP BY payment_id HAVING count(*)>1)","Critical"),
+        ("customers_unique_customer_id","Uniqueness","SELECT count(*) FROM (SELECT customer_id FROM raw_customers GROUP BY customer_id HAVING count(*)>1)","Critical"),
+        ("products_unique_product_id","Uniqueness","SELECT count(*) FROM (SELECT product_id FROM raw_products GROUP BY product_id HAVING count(*)>1)","Critical"),
+        ("stores_unique_store_id","Uniqueness","SELECT count(*) FROM (SELECT store_id FROM raw_stores GROUP BY store_id HAVING count(*)>1)","Critical"),
+        ("orders_allowed_status","Validity","SELECT count(*) FROM raw_orders WHERE upper(trim(order_status)) NOT IN ('DELIVERED','CANCELLED','RETURNED')","Critical"),
+        ("payments_allowed_mode","Validity","SELECT count(*) FROM raw_payments WHERE upper(trim(payment_mode)) NOT IN ('UPI','CARD','CASH ON DELIVERY','WALLET')","Critical"),
+        ("product_price_positive","Accuracy","SELECT count(*) FROM raw_products WHERE try_cast(mrp AS DOUBLE)<=0 OR try_cast(cost_price AS DOUBLE)<=0 OR try_cast(mrp AS DOUBLE) IS NULL OR try_cast(cost_price AS DOUBLE) IS NULL","Critical"),
+        ("orders_amount_formula","Accuracy","SELECT count(*) FROM raw_orders WHERE abs(try_cast(order_amount AS DOUBLE)-try_cast(quantity AS DOUBLE)*try_cast(unit_price AS DOUBLE)*(1-try_cast(discount_pct AS DOUBLE)/100))>0.02","Critical"),
+        ("orders_master_keys","Consistency","SELECT count(*) FROM raw_orders o WHERE NOT EXISTS (SELECT 1 FROM raw_customers c WHERE c.customer_id=o.customer_id) OR NOT EXISTS (SELECT 1 FROM raw_products p WHERE p.product_id=o.product_id) OR NOT EXISTS (SELECT 1 FROM raw_stores s WHERE s.store_id=o.store_id)","Critical"),
+        ("payments_order_key","Consistency","SELECT count(*) FROM raw_payments p WHERE NOT EXISTS (SELECT 1 FROM raw_orders o WHERE o.order_id=p.order_id)","Critical"),
+        ("orders_future_timestamp","Timeliness","SELECT count(*) FROM raw_orders WHERE try_cast(order_ts AS TIMESTAMP)>current_timestamp","Critical"),
+        ("orders_stale_timestamp","Timeliness","SELECT CASE WHEN max(try_cast(order_ts AS TIMESTAMP)) < current_timestamp-INTERVAL 30 DAY THEN count(*) ELSE 0 END FROM raw_orders WHERE try_cast(order_ts AS TIMESTAMP)<=current_timestamp","Warning"),
+    ]
+    rows_checked = {
+        "Completeness": sum(int(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]) for t in ["raw_orders","raw_payments","raw_customers","raw_products","raw_stores"]),
+        "Uniqueness": sum(int(con.execute(f"SELECT count(*) FROM {t}").fetchone()[0]) for t in ["raw_orders","raw_payments","raw_customers","raw_products","raw_stores"]),
+        "Validity": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
+        "Accuracy": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
+        "Consistency": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
+        "Timeliness": int(con.execute("SELECT count(*) FROM raw_orders").fetchone()[0]),
+    }
+    scorecard = []
+    for name, dim, sql, severity in checks:
+        failed = int(con.execute(sql).fetchone()[0])
+        scorecard.append({"check_name":name,"dimension":dim,"severity":severity,
+                          "rows_checked":rows_checked[dim],"rows_failed":failed})
+    _record_quality_checks(con, run_id, "nammamart_elt_surbhi", scorecard)
+
+
 def run_etl(run_id):
     ensure_dirs(); start=datetime.now(timezone.utc).replace(tzinfo=None); con=connect()
     try:
-        orders=read_csv(FILES["orders"]); payments=read_csv(FILES["payments"])
+        base_orders=read_csv(FILES["orders"]); increment_orders=read_csv(INCREMENT)
+        # Current-state ETL upsert: increment rows override earlier order versions.
+        orders=pd.concat([base_orders, increment_orders], ignore_index=True).drop_duplicates("order_id", keep="last")
+        payments=read_csv(FILES["payments"])
         customers=read_csv(FILES["customers"]).drop_duplicates("customer_id")
         products=read_csv(FILES["products"]).drop_duplicates("product_id")
         stores=read_csv(FILES["stores"]).drop_duplicates("store_id")
@@ -171,7 +283,12 @@ def run_etl(run_id):
             FROM etl_fact_orders o LEFT JOIN payments p USING(order_id)
             WHERE p.order_id IS NULL OR abs(try_cast(o.order_amount AS DOUBLE)-try_cast(p.amount_paid AS DOUBLE))>0.02 OR upper(p.payment_status)!='SUCCESS'""")
         record_dq(con,run_id,"nammamart_etl_surbhi",issues,len(orders))
-        record_run(con,run_id,"nammamart_etl_surbhi",start,len(orders)+len(payments)+len(customers)+len(products)+len(stores),len(clean),len(bad),"success")
+        record_etl_quality_scorecard(con, run_id, {
+            "orders": orders, "payments": payments,
+            "customers": customers, "products": products, "stores": stores,
+            "increment": increment_orders
+        })
+        record_run(con,run_id,"nammamart_etl_surbhi",start,len(base_orders)+len(increment_orders)+len(payments)+len(customers)+len(products)+len(stores),len(clean),len(bad),"success")
     except Exception:
         record_run(con,run_id,"nammamart_etl_surbhi",start,0,0,0,"failed")
         raise
@@ -393,10 +510,9 @@ def run_elt(run_id):
           FROM stg_orders o LEFT JOIN stg_payments p USING(order_id) WHERE o.dq_status='PASS' AND (p.order_id IS NULL OR abs(o.order_amount_cast-p.amount_paid)>0.02 OR p.payment_status!='SUCCESS')""")
         con.execute("""CREATE OR REPLACE TABLE mart_top_customers AS SELECT o.customer_id,c.loyalty_tier,sum(o.order_amount_cast) spend
           FROM stg_orders o LEFT JOIN stg_customers c USING(customer_id) WHERE o.dq_status='PASS' AND o.order_status_std='DELIVERED' GROUP BY ALL ORDER BY spend DESC LIMIT 10""")
-        # DQ scorecard for the SQL staging rule set.
-        con.execute("CREATE TABLE IF NOT EXISTS dq_results(run_id VARCHAR,dag_id VARCHAR,check_name VARCHAR,dimension VARCHAR,severity VARCHAR,rows_checked BIGINT,rows_failed BIGINT,status VARCHAR,checked_at TIMESTAMP)")
+        # SQL scorecard: persist each rule separately for every run and dimension.
+        record_elt_quality_scorecard(con, run_id)
         bad=con.execute("SELECT count(*) FROM stg_orders WHERE dq_status='FAIL'").fetchone()[0]
-        con.execute("INSERT INTO dq_results VALUES (?,?,?,?,?,?,?,?,?)",[run_id,"nammamart_elt_surbhi","staging_order_rules","Multiple","Critical",len(read_csv(FILES["orders"])),bad,"FAIL" if bad else "PASS",datetime.now(timezone.utc).replace(tzinfo=None)])
         loaded=con.execute("SELECT count(*) FROM stg_orders WHERE dq_status='PASS'").fetchone()[0]
         record_elt_observability(con, run_id, d)
         record_run(con,run_id,"nammamart_elt_surbhi",start,extracted,loaded,bad,"success")
