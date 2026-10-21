@@ -109,18 +109,48 @@ def dq_orders(df, customers, products, stores, run_id):
     failed=df["order_id"].astype(str).isin(failed_keys)
     return df.loc[~failed].copy(), df.loc[failed].copy(), issues
 def profile_all(run_id):
+    """Profile all six source files and write both issue and column-profile artifacts."""
     ensure_dirs()
-    d=data_dir()
-    records=[]
+    d = data_dir()
+    records = []
+    profile_rows = []
+    category_columns = {"order_status", "payment_mode", "loyalty_tier", "zone", "category"}
     for fn in [*FILES.values(), INCREMENT]:
-        frame=pd.read_csv(d/fn)
+        frame = pd.read_csv(d / fn, low_memory=False)
         for col in frame.columns:
-            nulls=int(frame[col].isna().sum())
-            if nulls: records.append({"file":fn,"row_key":"*","column":col,"problem":f"{nulls} null values","quality_dimension":"Completeness","severity":"Warning","run_id":run_id})
+            nulls = int(frame[col].isna().sum())
+            distinct = int(frame[col].nunique(dropna=True))
+            numeric = pd.to_numeric(frame[col], errors="coerce")
+            date_like = col.endswith("_ts") or col.endswith("_date") or col in {"signup_date","open_date","launch_date"}
+            if numeric.notna().sum() == frame[col].notna().sum() and numeric.notna().any():
+                min_value, max_value = str(numeric.min()), str(numeric.max())
+            elif date_like:
+                parsed = pd.to_datetime(frame[col], errors="coerce").dropna()
+                min_value = str(parsed.min()) if not parsed.empty else None
+                max_value = str(parsed.max()) if not parsed.empty else None
+            else:
+                min_value = max_value = None
+            category_values = None
+            if col in category_columns:
+                category_values = " | ".join(frame[col].dropna().astype(str).value_counts().head(30).index.tolist())
+            profile_rows.append({
+                "file": fn, "row_count": len(frame), "column": col,
+                "dtype_inferred": str(frame[col].dtype), "null_count": nulls,
+                "distinct_count": distinct, "min_value": min_value,
+                "max_value": max_value, "common_category_values": category_values,
+                "run_id": run_id
+            })
+            if nulls:
+                records.append({"file":fn,"row_key":"*","column":col,"problem":f"{nulls} null values",
+                    "quality_dimension":"Completeness","severity":"Warning","run_id":run_id})
         key = "order_id" if "order_id" in frame else ("payment_id" if "payment_id" in frame else ("customer_id" if "customer_id" in frame else ("product_id" if "product_id" in frame else ("store_id" if "store_id" in frame else None))))
         if key and frame[key].duplicated().any():
-            records.append({"file":fn,"row_key":"*","column":key,"problem":f"{int(frame[key].duplicated().sum())} duplicate keys","quality_dimension":"Uniqueness","severity":"Critical","run_id":run_id})
+            records.append({"file":fn,"row_key":"*","column":key,
+                "problem":f"{int(frame[key].duplicated().sum())} duplicate keys",
+                "quality_dimension":"Uniqueness","severity":"Critical","run_id":run_id})
+    pd.DataFrame(profile_rows).to_csv(d.parent / "reports" / f"profile_summary_{run_id.replace(':','_')}.csv", index=False)
     return pd.DataFrame(records)
+
 def record_dq(con, run_id, dag_id, issues, rows_checked):
     con.execute("""CREATE TABLE IF NOT EXISTS dq_results(run_id VARCHAR,dag_id VARCHAR,check_name VARCHAR,dimension VARCHAR,severity VARCHAR,rows_checked BIGINT,rows_failed BIGINT,status VARCHAR,checked_at TIMESTAMP)""")
     now=datetime.now(timezone.utc).replace(tzinfo=None)
