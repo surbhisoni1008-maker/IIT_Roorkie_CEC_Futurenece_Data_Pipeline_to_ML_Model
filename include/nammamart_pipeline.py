@@ -21,6 +21,23 @@ def data_dir():
 def connect():
     WAREHOUSE.parent.mkdir(parents=True, exist_ok=True)
     return duckdb.connect(str(WAREHOUSE))
+
+def append_new_raw_rows(con, table, frame):
+    """Append source rows once; allow changed versions to remain in raw history."""
+    metadata = {"_loaded_at", "_source_file", "_run_id"}
+    source_columns = [column for column in frame.columns if column not in metadata]
+    if not source_columns:
+        raise ValueError("Raw input has no source columns")
+    def quote(identifier):
+        return '"' + identifier.replace('"', '""') + '"'
+    match = " AND ".join(
+        "existing." + quote(column) + " IS NOT DISTINCT FROM incoming." + quote(column)
+        for column in source_columns
+    )
+    con.execute(
+        "INSERT INTO " + table + " BY NAME SELECT DISTINCT incoming.* FROM raw_input AS incoming "
+        "WHERE NOT EXISTS (SELECT 1 FROM " + table + " AS existing WHERE " + match + ")"
+    )
 def read_csv(name, dtype=None):
     return pd.read_csv(data_dir() / name, dtype=dtype, keep_default_na=True)
 def mask_email(v):
@@ -145,7 +162,7 @@ def run_elt(run_id):
             con.register("raw_input",raw)
             table=f"raw_{logical}"
             con.execute(f"CREATE TABLE IF NOT EXISTS {table} AS SELECT * FROM raw_input WHERE 1=0")
-            con.execute(f"INSERT INTO {table} BY NAME SELECT * FROM raw_input")
+            append_new_raw_rows(con, table, raw)
             con.unregister("raw_input")
         # Raw increment is append-only; typed staging is upserted on order_id.
         inc=d/INCREMENT
@@ -153,7 +170,7 @@ def run_elt(run_id):
             raw=pd.read_csv(inc,dtype=str,keep_default_na=False); raw["_loaded_at"]=datetime.now(timezone.utc).isoformat(); raw["_source_file"]=INCREMENT; raw["_run_id"]=run_id
             extracted+=len(raw); con.register("raw_input",raw)
             con.execute("CREATE TABLE IF NOT EXISTS raw_orders_increment AS SELECT * FROM raw_input WHERE 1=0")
-            con.execute("INSERT INTO raw_orders_increment BY NAME SELECT * FROM raw_input"); con.unregister("raw_input")
+            append_new_raw_rows(con, "raw_orders_increment", raw); con.unregister("raw_input")
         # SQL-only staging and marts. Raw data is retained even when staging rejects it.
         con.execute("""CREATE OR REPLACE TABLE stg_customers AS SELECT DISTINCT customer_id,
           CASE WHEN strpos(email,'@')>0 THEN substr(email,1,2)||'***@'||split_part(email,'@',2) ELSE '***' END email_masked,
