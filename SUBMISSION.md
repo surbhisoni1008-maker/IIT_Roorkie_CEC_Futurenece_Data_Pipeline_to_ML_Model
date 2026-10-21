@@ -14,7 +14,7 @@ This submission implements two comparable pipelines over the same six source exp
 - **Schedule:** `0 9 * * 1-6`, explicitly in `Asia/Kolkata`; 09:00 IST equals 03:30 UTC. `catchup=False` avoids replaying historical intervals. A laptop-based scheduler cannot run while Docker/the host is off, so a production deployment needs an always-on runtime and missed-run alerts.
 - **Auditability:** `dq_results` stores per-rule results across the six dimensions; `pipeline_runs` stores run summaries. Both DAGs include an `all_done` final audit task to cover failures that happen before the main pipeline helper starts.
 
-Source CSVs are inputs and must not be manually edited. Experiments must use temporary copies and restore the originals immediately afterward.
+Source CSVs are inputs and must not be manually edited. Experiments must use temporary copies and restore the originals immediately afterward. The six source files are committed under [`include/data/nammamart/`](https://github.com/surbhisoni1008-maker/IIT_Roorkie_CEC_Futurenece_Data_Pipeline_to_ML_Model/tree/namamart-assignment-work/include/data/nammamart) so a reviewer can reproduce the pipeline without relying on a local-only dataset. The live DuckDB warehouse and generated run reports remain local artifacts; the screenshots below preserve the available run evidence.
 
 ## Part C. Scheduling and orchestration answers
 
@@ -183,11 +183,16 @@ Top risks are (1) an incorrect SQL rule contaminating a mart if quality gates ar
 
 ## 8. Submission evidence checklist
 
-- [ ] Both DAGs parse without import errors and run successfully.
-- [ ] Screenshot of both DAG Graph views in green state.
-- [ ] Screenshot showing 09:00 IST schedule and next-run time.
-- [ ] Example quarantine CSV with a `failure_reason`.
-- [ ] Query results for `dq_results`, `pipeline_runs`, and both payment reconciliation tables.
-- [ ] Implementation and evidence review checklist completed. Controlled fault-injection scenarios not separately recorded are identified as implementation evidence, not claimed as executed tests.
-- [ ] Six business-question SQL queries run for both pipelines and results compared.
-- [ ] Confirm no secrets or unmasked customer PII were committed outside the source-data directory.
+| Requirement | Evidence in this branch | Status |
+|---|---|---|
+| Both DAG Graph views show green runs | [ELT Graph screenshot](screenshots/01_elt_dag_graph_success.png), [ETL Graph screenshot](screenshots/02_etl_dag_graph_success.png) | Evidence file present |
+| Schedule and next-run display | [Airflow schedule screenshot](screenshots/03_airflow_dags_schedule.png) | Evidence file present; schedule code is `0 9 * * 1-6` in `Asia/Kolkata` |
+| Quarantine with `failure_reason` | [Quarantine screenshot](screenshots/04_quarantine_failure_reasons.png) | Evidence file present; user confirmed the reason column is visible |
+| Pipeline report / quality scorecard / audit | [Pipeline report](screenshots/05_pipeline_report_example.png), [DQ results and pipeline runs](screenshots/06_sql_dq_results_and_pipeline_runs.png), [audit and reconciliation](screenshots/07_sql_pipeline_audit_and_reconciliation.png) | Evidence files present |
+| ETL and ELT payment reconciliation | [Reconciliation comparison screenshot](screenshots/08_sql_payment_reconciliation_etl_elt.png) | Evidence file present |
+| Six business questions as SQL | [Paired SQL queries](include/sql/business_questions.sql) | SQL is present; retain result captures for all six questions if they are not already included in the screenshots |
+| All ten controlled observability experiments | Experiment table in Section 5 | Code/monitoring implementation documented; do not infer a controlled run from code alone |
+| Source files for reproducibility | [Six CSVs](include/data/nammamart/) | Committed to this branch |
+| No secrets or unmasked PII outside the source-data directory | Source data is in the assignment-approved `include/data/nammamart/` location | Review code/history before final submission; do not add local database or unrelated personal files |
+
+The SQL file contains ETL and ELT queries for each of the six business questions, plus scorecard/audit queries. The screenshots establish the specific views named above; they do not by themselves prove every controlled fault-injection experiment was executed.
