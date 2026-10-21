@@ -323,6 +323,51 @@ def execute_sql_file(con, filename):
     con.execute(sql_path.read_text(encoding="utf-8"))
 
 
+def quarantine_source_frames(run_id, source_frames):
+    """Write row-level rejects for non-order source files without altering inputs."""
+    ensure_dirs()
+    total = 0
+    specs = {
+        "payments.csv": (["payment_id","order_id","payment_ts","amount_paid","payment_status"], "payment_id"),
+        "customers.csv": (["customer_id","city","signup_date"], "customer_id"),
+        "products.csv": (["product_id","product_name","category","mrp","cost_price"], "product_id"),
+        "stores.csv": (["store_id","store_name","zone","capacity_orders_per_day"], "store_id"),
+        INCREMENT: (["order_id","customer_id","product_id","store_id","order_ts","quantity","order_amount"], "order_id"),
+    }
+    for filename, frame in source_frames.items():
+        if filename not in specs or frame.empty:
+            continue
+        required, key = specs[filename]
+        available = [column for column in required if column in frame.columns]
+        missing = frame[available].isna().any(axis=1) if available else pd.Series(False, index=frame.index)
+        reasons = pd.Series("", index=frame.index, dtype="object")
+        reasons.loc[missing] = "Missing required field(s)"
+        duplicates = frame[key].duplicated(keep="first") if key in frame.columns else pd.Series(False, index=frame.index)
+        reasons.loc[duplicates] = reasons.loc[duplicates].apply(lambda value: (value + "; " if value else "") + f"Duplicate {key}")
+        if filename == "payments.csv":
+            invalid_mode = ~frame["payment_mode"].astype(str).str.strip().str.upper().isin(["UPI","CARD","CASH ON DELIVERY","WALLET"])
+            reasons.loc[invalid_mode] = reasons.loc[invalid_mode].apply(lambda value: (value + "; " if value else "") + "Invalid payment_mode")
+            amount = pd.to_numeric(frame["amount_paid"], errors="coerce")
+            invalid_amount = amount.isna() | (amount < 0)
+            reasons.loc[invalid_amount] = reasons.loc[invalid_amount].apply(lambda value: (value + "; " if value else "") + "Invalid amount_paid")
+        elif filename == "products.csv":
+            mrp = pd.to_numeric(frame["mrp"], errors="coerce")
+            cost = pd.to_numeric(frame["cost_price"], errors="coerce")
+            invalid_price = mrp.isna() | cost.isna() | (mrp <= 0) | (cost <= 0) | (cost > mrp)
+            reasons.loc[invalid_price] = reasons.loc[invalid_price].apply(lambda value: (value + "; " if value else "") + "Invalid product pricing")
+        elif filename == "stores.csv":
+            capacity = pd.to_numeric(frame["capacity_orders_per_day"], errors="coerce")
+            invalid_capacity = capacity.isna() | (capacity <= 0)
+            reasons.loc[invalid_capacity] = reasons.loc[invalid_capacity].apply(lambda value: (value + "; " if value else "") + "Invalid store capacity")
+        bad = frame.loc[reasons.ne("")].copy()
+        if not bad.empty:
+            bad["failure_reason"] = reasons.loc[bad.index].values
+            safe_name = filename.replace(".csv", "").replace("/", "_")
+            bad.to_csv(ROOT / "include" / "quarantine" / "surbhi" / f"{safe_name}_failed_{run_id.replace(':','_')}.csv", index=False)
+            total += len(bad)
+    return total
+
+
 def run_etl(run_id):
     ensure_dirs(); start=datetime.now(timezone.utc).replace(tzinfo=None); con=connect()
     try:
@@ -333,6 +378,11 @@ def run_etl(run_id):
         customers_source=read_csv(FILES["customers"]); customers=customers_source.drop_duplicates("customer_id")
         products_source=read_csv(FILES["products"]); products=products_source.drop_duplicates("product_id")
         stores_source=read_csv(FILES["stores"]); stores=stores_source.drop_duplicates("store_id")
+        other_quarantined=quarantine_source_frames(run_id, {
+            "payments.csv": payments, "customers.csv": customers_source,
+            "products.csv": products_source, "stores.csv": stores_source,
+            INCREMENT: increment_orders
+        })
         issues=profile_all(run_id)
         clean,bad,order_issues=dq_orders(orders,customers,products,stores,run_id)
         issues=pd.concat([issues,order_issues],ignore_index=True)
@@ -370,7 +420,7 @@ def run_etl(run_id):
             "customers": customers_source, "products": products_source, "stores": stores_source,
             "increment": increment_orders
         })
-        record_run(con,run_id,"nammamart_etl_surbhi",start,len(base_orders)+len(increment_orders)+len(payments)+len(customers)+len(products)+len(stores),len(clean),len(bad),"success")
+        record_run(con,run_id,"nammamart_etl_surbhi",start,len(base_orders)+len(increment_orders)+len(payments)+len(customers_source)+len(products_source)+len(stores_source),len(clean),len(bad)+other_quarantined,"success")
     except Exception:
         record_run(con,run_id,"nammamart_etl_surbhi",start,0,0,0,"failed")
         raise
