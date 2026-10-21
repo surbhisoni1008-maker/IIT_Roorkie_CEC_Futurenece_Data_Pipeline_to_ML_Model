@@ -537,17 +537,17 @@ def run_elt(run_id):
                             THEN 'Amount mismatch'
                         WHEN NOT EXISTS (
                             SELECT 1 FROM stg_customers c
-                            WHERE c.customer_id = inc_input.customer_id
+                            WHERE c.customer_id = inc_input.customer_id AND c.dq_status <> 'FAIL'
                         )
                             THEN 'Unknown customer'
                         WHEN NOT EXISTS (
                             SELECT 1 FROM stg_products p
-                            WHERE p.product_id = inc_input.product_id
+                            WHERE p.product_id = inc_input.product_id AND p.dq_status <> 'FAIL'
                         )
                             THEN 'Unknown product'
                         WHEN NOT EXISTS (
                             SELECT 1 FROM stg_stores s
-                            WHERE s.store_id = inc_input.store_id
+                            WHERE s.store_id = inc_input.store_id AND s.dq_status <> 'FAIL'
                         )
                             THEN 'Unknown store'
                         WHEN upper(trim(order_status)) = 'DELIVERED'
@@ -578,15 +578,15 @@ def run_elt(run_id):
                           ) > 0.02
                           OR NOT EXISTS (
                               SELECT 1 FROM stg_customers c
-                              WHERE c.customer_id = inc_input.customer_id
+                              WHERE c.customer_id = inc_input.customer_id AND c.dq_status <> 'FAIL'
                           )
                           OR NOT EXISTS (
                               SELECT 1 FROM stg_products p
-                              WHERE p.product_id = inc_input.product_id
+                              WHERE p.product_id = inc_input.product_id AND p.dq_status <> 'FAIL'
                           )
                           OR NOT EXISTS (
                               SELECT 1 FROM stg_stores s
-                              WHERE s.store_id = inc_input.store_id
+                              WHERE s.store_id = inc_input.store_id AND s.dq_status <> 'FAIL'
                           )
                           OR (
                               upper(trim(order_status)) = 'DELIVERED'
