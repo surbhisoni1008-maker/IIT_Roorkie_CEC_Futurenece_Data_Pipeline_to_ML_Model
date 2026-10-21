@@ -417,14 +417,7 @@ def run_elt(run_id):
             con.execute("CREATE TABLE IF NOT EXISTS raw_orders_increment AS SELECT * FROM raw_input WHERE 1=0")
             append_new_raw_rows(con, "raw_orders_increment", raw); con.unregister("raw_input")
         # SQL-only staging and marts. Raw data is retained even when staging rejects it.
-        con.execute("""CREATE OR REPLACE TABLE stg_customers AS SELECT DISTINCT customer_id,
-          CASE WHEN strpos(email,'@')>0 THEN substr(email,1,2)||'***@'||split_part(email,'@',2) ELSE '***' END email_masked,
-          CASE WHEN length(regexp_replace(phone,'[^0-9]','','g'))>=4 THEN substr(regexp_replace(phone,'[^0-9]','','g'),1,2)||'******'||right(regexp_replace(phone,'[^0-9]','','g'),2) ELSE '***' END phone_masked,
-          city,area,pincode,signup_date,upper(trim(loyalty_tier)) loyalty_tier,is_active FROM raw_customers""")
-        con.execute("""CREATE OR REPLACE TABLE stg_products AS SELECT DISTINCT product_id,trim(product_name) product_name,trim(category) category,sub_category,brand,
-          try_cast(mrp AS DOUBLE) mrp,try_cast(cost_price AS DOUBLE) cost_price,unit,is_perishable,launch_date FROM raw_products""")
-        con.execute("""CREATE OR REPLACE TABLE stg_stores AS SELECT DISTINCT store_id,trim(store_name) store_name,upper(trim("zone")) AS zone,area,pincode,open_date,manager_name,try_cast(capacity_orders_per_day AS INTEGER) capacity_orders_per_day FROM raw_stores""")
-        con.execute("""CREATE OR REPLACE TABLE stg_payments AS SELECT payment_id,order_id,payment_ts,trim(payment_mode) payment_mode,try_cast(amount_paid AS DOUBLE) amount_paid,upper(trim(payment_status)) payment_status,gateway_ref FROM raw_payments""")
+        execute_sql_file(con, "elt_staging_dimensions.sql")
         execute_sql_file(con, "elt_staging_orders.sql")
         # Merge increment: newest copy of an order wins in staging; raw remains append-only.
         if inc.exists():
@@ -534,23 +527,7 @@ def run_elt(run_id):
             con.execute("CREATE OR REPLACE TEMP TABLE stg_orders_all AS SELECT * FROM stg_orders UNION ALL BY NAME SELECT * FROM inc_clean")
             con.execute("CREATE OR REPLACE TABLE stg_orders AS SELECT * FROM stg_orders_all QUALIFY row_number() OVER(PARTITION BY order_id ORDER BY _loaded_at DESC)=1")
             con.unregister("inc_input")
-        con.execute("""CREATE OR REPLACE TABLE mart_daily_store_kpis AS
-          SELECT CAST(o.order_ts_cast AS DATE) order_date,s.zone,s.store_id,s.store_name,
-          SUM(CASE WHEN o.order_status_std='DELIVERED' THEN o.order_amount_cast ELSE 0 END) net_revenue,
-          count(*) FILTER(WHERE o.order_status_std='DELIVERED') delivered_orders
-          FROM stg_orders o LEFT JOIN stg_stores s USING(store_id) WHERE o.dq_status='PASS' GROUP BY ALL""")
-        con.execute("""CREATE OR REPLACE TABLE mart_category_margin AS SELECT p.category,
-          SUM(CASE WHEN o.order_status_std='DELIVERED' THEN o.order_amount_cast ELSE 0 END) revenue,
-          SUM(CASE WHEN o.order_status_std='DELIVERED' THEN o.order_amount_cast ELSE 0 END)-SUM(CASE WHEN o.order_status_std='DELIVERED' THEN o.quantity_cast*p.cost_price ELSE 0 END) gross_margin
-          FROM stg_orders o LEFT JOIN stg_products p USING(product_id) WHERE o.dq_status='PASS' GROUP BY p.category""")
-        con.execute("""CREATE OR REPLACE TABLE mart_delivery_sla AS SELECT s.store_id,s.store_name,avg(o.delivery_minutes_cast) avg_delivery_minutes,
-          avg(CASE WHEN o.delivery_minutes_cast<=15 THEN 1.0 ELSE 0.0 END)*100 pct_within_15_min
-          FROM stg_orders o LEFT JOIN stg_stores s USING(store_id) WHERE o.dq_status='PASS' AND o.order_status_std='DELIVERED' GROUP BY ALL""")
-        con.execute("""CREATE OR REPLACE TABLE mart_payment_reconciliation AS SELECT o.order_id,o.order_amount_cast order_amount,p.amount_paid,
-          CASE WHEN p.order_id IS NULL THEN 'No payment found' WHEN abs(o.order_amount_cast-p.amount_paid)>0.02 THEN 'Amount mismatch' WHEN p.payment_status!='SUCCESS' THEN 'Payment not successful' END failure_reason
-          FROM stg_orders o LEFT JOIN stg_payments p USING(order_id) WHERE o.dq_status='PASS' AND (p.order_id IS NULL OR abs(o.order_amount_cast-p.amount_paid)>0.02 OR p.payment_status!='SUCCESS')""")
-        con.execute("""CREATE OR REPLACE TABLE mart_top_customers AS SELECT o.customer_id,c.loyalty_tier,sum(o.order_amount_cast) spend
-          FROM stg_orders o LEFT JOIN stg_customers c USING(customer_id) WHERE o.dq_status='PASS' AND o.order_status_std='DELIVERED' GROUP BY ALL ORDER BY spend DESC LIMIT 10""")
+        execute_sql_file(con, "elt_marts.sql")
         # SQL scorecard: persist each rule separately for every run and dimension.
         record_elt_quality_scorecard(con, run_id)
         bad=con.execute("SELECT count(*) FROM stg_orders WHERE dq_status='FAIL'").fetchone()[0]
