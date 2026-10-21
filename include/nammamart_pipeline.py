@@ -241,6 +241,23 @@ def record_elt_quality_scorecard(con, run_id):
     _record_quality_checks(con, run_id, "nammamart_elt_surbhi", scorecard)
 
 
+
+def ensure_run_audit(run_id, dag_id, status="failed"):
+    """Fallback audit for runs whose pipeline task failed before writing its own audit row."""
+    con = connect()
+    try:
+        con.execute("""CREATE TABLE IF NOT EXISTS pipeline_runs(
+            run_id VARCHAR,dag_id VARCHAR,start_time TIMESTAMP,end_time TIMESTAMP,
+            rows_extracted BIGINT,rows_loaded BIGINT,rows_quarantined BIGINT,status VARCHAR)""")
+        exists = con.execute("SELECT count(*) FROM pipeline_runs WHERE run_id=? AND dag_id=?", [run_id, dag_id]).fetchone()[0]
+        if not exists:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            con.execute("INSERT INTO pipeline_runs VALUES (?,?,?,?,?,?,?,?)",
+                        [run_id, dag_id, now, now, 0, 0, 0, status])
+    finally:
+        con.close()
+
+
 def run_etl(run_id):
     ensure_dirs(); start=datetime.now(timezone.utc).replace(tzinfo=None); con=connect()
     try:
