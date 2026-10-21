@@ -10,7 +10,7 @@
 This submission implements two comparable pipelines over the same six source exports.
 
 - **ETL:** parallel source-file/schema checks, Python validation, quarantine reports, PII masking, a DuckDB fact/dimension model, revenue/margin summaries, and payment reconciliation.
-- **ELT:** raw source tables with ingestion metadata, SQL-based staging and marts, newest-version-wins order staging for the incremental feed, and source-volume/freshness/distribution reports.
+- **ELT:** raw source tables with ingestion metadata, SQL transformations stored in `include/sql/elt_staging_dimensions.sql`, `include/sql/elt_staging_orders.sql`, and `include/sql/elt_marts.sql`, newest-version-wins order staging for the incremental feed, and source-volume/freshness/distribution reports.
 - **Schedule:** `0 9 * * 1-6`, explicitly in `Asia/Kolkata`; 09:00 IST equals 03:30 UTC. `catchup=False` avoids replaying historical intervals. A laptop-based scheduler cannot run while Docker/the host is off, so a production deployment needs an always-on runtime and missed-run alerts.
 - **Auditability:** `dq_results` stores per-rule results across the six dimensions; `pipeline_runs` stores run summaries. Both DAGs include an `all_done` final audit task to cover failures that happen before the main pipeline helper starts.
 
@@ -20,7 +20,7 @@ Source CSVs are inputs and must not be manually edited. Experiments must use tem
 
 The shared profiler inspects all six source files for nulls and duplicate business keys. ETL checks order status, timestamp, discount range, quantity, calculated amount, master-key integrity, delivered-order duration, and future timestamps. Schema assertions fail loudly when required columns are absent. The ELT scorecard also checks completeness, uniqueness, validity, accuracy, consistency, and timeliness with separate rows per rule.
 
-The per-run artifacts are written under `include/reports/`; rejected ETL orders are written under `include/quarantine/surbhi/`. Reports should be reviewed by source file, row key, column, quality dimension, and severity before a business rule is changed.
+The per-run column-level profile (row counts, nulls, distinct counts, numeric/date ranges, and selected categorical distributions) is written to `include/reports/profile_summary_<run_id>.csv`; issue and observability artifacts are also written under `include/reports/`. Rejected ETL orders are written under `include/quarantine/surbhi/`. Reports should be reviewed by source file, row key, column, quality dimension, and severity before a business rule is changed.
 
 ### Questions for the client
 
