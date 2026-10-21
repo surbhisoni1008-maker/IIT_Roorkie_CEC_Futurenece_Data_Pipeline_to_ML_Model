@@ -16,6 +16,27 @@ This submission implements two comparable pipelines over the same six source exp
 
 Source CSVs are inputs and must not be manually edited. Experiments must use temporary copies and restore the originals immediately afterward.
 
+## Part C. Scheduling and orchestration answers
+
+- **Schedule:** `0 9 * * 1-6` in `Asia/Kolkata` means 09:00 IST, Monday through Saturday. It does not schedule a Sunday run.
+- **Catch-up:** `catchup=False` prevents Airflow from automatically creating runs for all missed historical intervals when the DAG is first enabled.
+- **Retries:** each DAG allows two retries with a three-minute delay. This helps with transient failures; it will not repair bad source data or a persistent schema error.
+- **Dependencies:** the six source/schema-check tasks feed the main transform/load task. A final audit task uses `all_done` so it can attempt to record an audit outcome after the main task finishes.
+- **Operational limitation:** the local Astro/Docker scheduler can run only while the host and Docker environment are available. Production scheduling needs an always-on orchestrator, alerting, and a documented recovery process.
+
+## Part 0. Initial profiling and issue log
+
+The profiler writes a per-run column-level summary and flags nulls and duplicate business keys across the five base files and the incremental order feed. The following issues have been observed in the available run evidence; they are data-quality findings, not proof that the source file was changed.
+
+| Issue | Evidence / impact | Handling |
+|---|---|---|
+| Five future-dated order timestamps | The ELT observability report identified five future timestamps; sample rows are listed in `include/reports/future_order_timestamps.csv`. Future dates can distort freshness and time-based metrics. | Keep source unchanged, flag the records, and review with the data owner before correcting source values. |
+| Incremental feed contains order versions | Base orders and `orders_2026-10-01_increment.csv` are both ingested. The latest version should win for the current-state staging/fact model, while raw ELT inputs remain available for audit. | Compare order IDs and changed fields; verify idempotency and correction behavior with a controlled experiment. |
+| Source-level nulls, duplicates, invalid values, and schema drift | The profiler and per-rule scorecards are designed to record these; actual counts vary by run and must be read from that run's report and `dq_results`. | Quarantine rejected rows where supported; fail clearly on missing required columns; do not claim a test passed without run evidence. |
+| Reconciliation exceptions | Payment/order amount mismatches, missing payments, and unsuccessful payment statuses are represented in reconciliation tables. | Review exceptions with Finance; do not silently force payment totals to match. |
+
+**Open questions for the business:** confirm the policy for negative quantities/returns, whether late return status changes restate the original order date or book a reversal on the return date, and the matching tolerance/allocation policy for partial or split payments.
+
 ## 2. Profiling and issue handling
 
 The shared profiler inspects all six source files for nulls and duplicate business keys. ETL checks order status, timestamp, discount range, quantity, calculated amount, master-key integrity, delivered-order duration, and future timestamps. Schema assertions fail loudly when required columns are absent. The ELT scorecard also checks completeness, uniqueness, validity, accuracy, consistency, and timeliness with separate rows per rule.
