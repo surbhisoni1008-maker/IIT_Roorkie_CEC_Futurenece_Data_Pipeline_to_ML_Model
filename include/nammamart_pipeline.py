@@ -176,6 +176,48 @@ def run_etl(run_id):
         record_run(con,run_id,"nammamart_etl_surbhi",start,0,0,0,"failed")
         raise
     finally: con.close()
+def record_elt_observability(con, run_id, source_dir):
+    """Record source volume, freshness, and store-level distribution checks."""
+    checks = []
+    con.execute("""CREATE TABLE IF NOT EXISTS observability_metrics(
+        metric_name VARCHAR, metric_key VARCHAR, metric_value DOUBLE,
+        run_id VARCHAR, recorded_at TIMESTAMP)""")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for filename in [*FILES.values(), INCREMENT]:
+        path = source_dir / filename
+        if not path.exists():
+            checks.append({"check":"source_volume", "subject":filename, "status":"FAIL", "observed":None, "details":"Required source file is missing"})
+            continue
+        frame = pd.read_csv(path, low_memory=False)
+        count = len(frame)
+        previous = con.execute("SELECT metric_value FROM observability_metrics WHERE metric_name='source_rows' AND metric_key=? ORDER BY recorded_at DESC LIMIT 1", [filename]).fetchone()
+        status, details = "PASS", "Source row count recorded"
+        if previous and previous[0] > 0 and count < previous[0] * 0.10:
+            status, details = "WARN", "Source row count dropped by more than 90% versus prior run"
+        checks.append({"check":"source_volume", "subject":filename, "status":status, "observed":count, "details":details})
+        con.execute("INSERT INTO observability_metrics VALUES (?,?,?,?,?)", ["source_rows", filename, float(count), run_id, now])
+    orders = pd.read_csv(source_dir / FILES["orders"], low_memory=False)
+    timestamps = pd.to_datetime(orders.get("order_ts"), errors="coerce", utc=True).dropna()
+    if timestamps.empty:
+        checks.append({"check":"freshness", "subject":"orders.csv", "status":"FAIL", "observed":None, "details":"No valid order timestamps found"})
+    else:
+        age_days = (pd.Timestamp.now(tz="UTC") - timestamps.max()).total_seconds() / 86400
+        checks.append({"check":"freshness", "subject":"orders.csv", "status":"WARN" if age_days > 30 else "PASS", "observed":round(age_days, 2), "details":"Age of newest valid order timestamp in days; warning threshold is 30 days"})
+        future_count = int((timestamps > pd.Timestamp.now(tz="UTC")).sum())
+        checks.append({"check":"future_timestamps", "subject":"orders.csv", "status":"WARN" if future_count else "PASS", "observed":future_count, "details":"Count of future order timestamps"})
+    if {"store_id", "order_amount"}.issubset(orders.columns):
+        orders["order_amount_numeric"] = pd.to_numeric(orders["order_amount"], errors="coerce")
+        current = orders.dropna(subset=["store_id", "order_amount_numeric"]).groupby("store_id")["order_amount_numeric"].mean()
+        for store_id, mean_amount in current.items():
+            key = str(store_id)
+            previous = con.execute("SELECT metric_value FROM observability_metrics WHERE metric_name='store_avg_order_amount' AND metric_key=? ORDER BY recorded_at DESC LIMIT 1", [key]).fetchone()
+            status, details = "PASS", "Store average order amount recorded"
+            if previous and previous[0] != 0 and abs(mean_amount - previous[0]) / abs(previous[0]) > 0.50:
+                status, details = "WARN", "Store average order amount shifted by more than 50% versus prior run"
+            checks.append({"check":"distribution_drift", "subject":key, "status":status, "observed":round(float(mean_amount), 2), "details":details})
+            con.execute("INSERT INTO observability_metrics VALUES (?,?,?,?,?)", ["store_avg_order_amount", key, float(mean_amount), run_id, now])
+    write_observability_report(run_id, checks)
+
 def run_elt(run_id):
     ensure_dirs(); start=datetime.now(timezone.utc).replace(tzinfo=None); con=connect(); extracted=loaded=0
     try:
@@ -351,6 +393,7 @@ def run_elt(run_id):
         bad=con.execute("SELECT count(*) FROM stg_orders WHERE dq_status='FAIL'").fetchone()[0]
         con.execute("INSERT INTO dq_results VALUES (?,?,?,?,?,?,?,?,?)",[run_id,"nammamart_elt_surbhi","staging_order_rules","Multiple","Critical",len(read_csv(FILES["orders"])),bad,"FAIL" if bad else "PASS",datetime.now(timezone.utc).replace(tzinfo=None)])
         loaded=con.execute("SELECT count(*) FROM stg_orders WHERE dq_status='PASS'").fetchone()[0]
+        record_elt_observability(con, run_id, d)
         record_run(con,run_id,"nammamart_elt_surbhi",start,extracted,loaded,bad,"success")
     except Exception:
         record_run(con,run_id,"nammamart_elt_surbhi",start,extracted,loaded,0,"failed")
