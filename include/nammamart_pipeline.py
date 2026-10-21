@@ -148,7 +148,7 @@ def profile_all(run_id):
             records.append({"file":fn,"row_key":"*","column":key,
                 "problem":f"{int(frame[key].duplicated().sum())} duplicate keys",
                 "quality_dimension":"Uniqueness","severity":"Critical","run_id":run_id})
-    pd.DataFrame(profile_rows).to_csv(d.parent / "reports" / f"profile_summary_{run_id.replace(':','_')}.csv", index=False)
+    pd.DataFrame(profile_rows).to_csv(ROOT / "include" / "reports" / f"profile_summary_{run_id.replace(':','_')}.csv", index=False)
     return pd.DataFrame(records)
 
 def record_dq(con, run_id, dag_id, issues, rows_checked):
