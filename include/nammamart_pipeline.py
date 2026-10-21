@@ -393,9 +393,9 @@ def run_elt(run_id):
           city,area,pincode,signup_date,upper(trim(loyalty_tier)) loyalty_tier,is_active FROM raw_customers""")
         con.execute("""CREATE OR REPLACE TABLE stg_products AS SELECT DISTINCT product_id,trim(product_name) product_name,trim(category) category,sub_category,brand,
           try_cast(mrp AS DOUBLE) mrp,try_cast(cost_price AS DOUBLE) cost_price,unit,is_perishable,launch_date FROM raw_products""")
-        con.execute("""CREATE OR REPLACE TABLE stg_stores AS SELECT DISTINCT store_id,trim(store_name) store_name,upper(trim("zone")) AS zone,area,pincode,open_date,manager_name,try_cast(capacity_o        execute_sql_file(con, "elt_staging_orders.sql")   OR (upper(trim(order_status))='DELIVERED' AND (try_cast(delivery_minutes AS DOUBLE) IS NULL OR try_cast(delivery_minutes AS DOUBLE)>=120))
-            THEN 'FAIL' ELSE 'PASS' END dq_status
-          FROM (SELECT * FROM raw_orders QUALIFY row_number() OVER(PARTITION BY order_id ORDER BY _loaded_at DESC)=1) raw_orders""")
+        con.execute("""CREATE OR REPLACE TABLE stg_stores AS SELECT DISTINCT store_id,trim(store_name) store_name,upper(trim("zone")) AS zone,area,pincode,open_date,manager_name,try_cast(capacity_orders_per_day AS INTEGER) capacity_orders_per_day FROM raw_stores""")
+        con.execute("""CREATE OR REPLACE TABLE stg_payments AS SELECT payment_id,order_id,payment_ts,trim(payment_mode) payment_mode,try_cast(amount_paid AS DOUBLE) amount_paid,upper(trim(payment_status)) payment_status,gateway_ref FROM raw_payments""")
+        execute_sql_file(con, "elt_staging_orders.sql")
         # Merge increment: newest copy of an order wins in staging; raw remains append-only.
         if inc.exists():
             incdf=pd.read_csv(inc,dtype=str,keep_default_na=False); incdf["_loaded_at"]=datetime.now(timezone.utc).isoformat(); incdf["_source_file"]=INCREMENT; incdf["_run_id"]=run_id
