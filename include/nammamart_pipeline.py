@@ -258,6 +258,14 @@ def ensure_run_audit(run_id, dag_id, status="failed"):
         con.close()
 
 
+def execute_sql_file(con, filename):
+    """Execute a checked-in SQL transformation from include/sql."""
+    sql_path = ROOT / "include" / "sql" / filename
+    if not sql_path.exists():
+        raise FileNotFoundError(f"SQL transformation file not found: {sql_path}")
+    con.execute(sql_path.read_text(encoding="utf-8"))
+
+
 def run_etl(run_id):
     ensure_dirs(); start=datetime.now(timezone.utc).replace(tzinfo=None); con=connect()
     try:
@@ -385,47 +393,7 @@ def run_elt(run_id):
           city,area,pincode,signup_date,upper(trim(loyalty_tier)) loyalty_tier,is_active FROM raw_customers""")
         con.execute("""CREATE OR REPLACE TABLE stg_products AS SELECT DISTINCT product_id,trim(product_name) product_name,trim(category) category,sub_category,brand,
           try_cast(mrp AS DOUBLE) mrp,try_cast(cost_price AS DOUBLE) cost_price,unit,is_perishable,launch_date FROM raw_products""")
-        con.execute("""CREATE OR REPLACE TABLE stg_stores AS SELECT DISTINCT store_id,trim(store_name) store_name,upper(trim("zone")) AS zone,area,pincode,open_date,manager_name,try_cast(capacity_orders_per_day AS INTEGER) capacity_orders_per_day FROM raw_stores""")
-        con.execute("""CREATE OR REPLACE TABLE stg_payments AS SELECT payment_id,order_id,payment_ts,trim(payment_mode) payment_mode,try_cast(amount_paid AS DOUBLE) amount_paid,upper(trim(payment_status)) payment_status,gateway_ref FROM raw_payments""")
-        con.execute("""CREATE OR REPLACE TABLE stg_orders AS
-          SELECT *, try_cast(order_ts AS TIMESTAMP) order_ts_cast,
-          try_cast(quantity AS INTEGER) quantity_cast,
-          try_cast(unit_price AS DOUBLE) unit_price_cast,
-          try_cast(discount_pct AS DOUBLE) discount_pct_cast,
-          try_cast(order_amount AS DOUBLE) order_amount_cast,
-          try_cast(delivery_minutes AS DOUBLE) delivery_minutes_cast,
-          upper(trim(order_status)) order_status_std,
-          CASE
-            WHEN coalesce(trim(order_id),'')='' THEN 'Missing order_id'
-            WHEN coalesce(trim(customer_id),'')='' THEN 'Missing customer_id'
-            WHEN coalesce(trim(product_id),'')='' THEN 'Missing product_id'
-            WHEN coalesce(trim(store_id),'')='' THEN 'Missing store_id'
-            WHEN try_cast(order_ts AS TIMESTAMP) IS NULL THEN 'Invalid timestamp'
-            WHEN try_cast(order_ts AS TIMESTAMP)>current_timestamp THEN 'Future timestamp'
-            WHEN try_cast(quantity AS INTEGER) IS NULL OR try_cast(quantity AS INTEGER)<=0 THEN 'Quantity must be positive'
-            WHEN try_cast(unit_price AS DOUBLE) IS NULL OR try_cast(unit_price AS DOUBLE)<=0 THEN 'Invalid unit price'
-            WHEN try_cast(discount_pct AS DOUBLE) IS NULL OR try_cast(discount_pct AS DOUBLE) NOT BETWEEN 0 AND 100 THEN 'Invalid discount'
-            WHEN try_cast(order_amount AS DOUBLE) IS NULL THEN 'Missing/invalid order amount'
-            WHEN abs(try_cast(order_amount AS DOUBLE)-try_cast(quantity AS DOUBLE)*try_cast(unit_price AS DOUBLE)*(1-try_cast(discount_pct AS DOUBLE)/100))>0.02 THEN 'Amount mismatch'
-            WHEN upper(trim(order_status)) NOT IN ('DELIVERED','CANCELLED','RETURNED') THEN 'Invalid status'
-            WHEN NOT EXISTS (SELECT 1 FROM stg_customers c WHERE c.customer_id=raw_orders.customer_id) THEN 'Unknown customer'
-            WHEN NOT EXISTS (SELECT 1 FROM stg_products p WHERE p.product_id=raw_orders.product_id) THEN 'Unknown product'
-            WHEN NOT EXISTS (SELECT 1 FROM stg_stores s WHERE s.store_id=raw_orders.store_id) THEN 'Unknown store'
-            WHEN upper(trim(order_status))='DELIVERED' AND try_cast(delivery_minutes AS DOUBLE) IS NULL THEN 'Missing delivery time'
-            WHEN upper(trim(order_status))='DELIVERED' AND try_cast(delivery_minutes AS DOUBLE)>=120 THEN 'Delivery time too long'
-            ELSE NULL END failure_reason,
-          CASE WHEN coalesce(trim(order_id),'')='' OR coalesce(trim(customer_id),'')='' OR coalesce(trim(product_id),'')='' OR coalesce(trim(store_id),'')=''
-            OR try_cast(order_ts AS TIMESTAMP) IS NULL OR try_cast(order_ts AS TIMESTAMP)>current_timestamp
-            OR try_cast(quantity AS INTEGER) IS NULL OR try_cast(quantity AS INTEGER)<=0
-            OR try_cast(unit_price AS DOUBLE) IS NULL OR try_cast(unit_price AS DOUBLE)<=0
-            OR try_cast(discount_pct AS DOUBLE) IS NULL OR try_cast(discount_pct AS DOUBLE) NOT BETWEEN 0 AND 100
-            OR try_cast(order_amount AS DOUBLE) IS NULL
-            OR abs(try_cast(order_amount AS DOUBLE)-try_cast(quantity AS DOUBLE)*try_cast(unit_price AS DOUBLE)*(1-try_cast(discount_pct AS DOUBLE)/100))>0.02
-            OR upper(trim(order_status)) NOT IN ('DELIVERED','CANCELLED','RETURNED')
-            OR NOT EXISTS (SELECT 1 FROM stg_customers c WHERE c.customer_id=raw_orders.customer_id)
-            OR NOT EXISTS (SELECT 1 FROM stg_products p WHERE p.product_id=raw_orders.product_id)
-            OR NOT EXISTS (SELECT 1 FROM stg_stores s WHERE s.store_id=raw_orders.store_id)
-            OR (upper(trim(order_status))='DELIVERED' AND (try_cast(delivery_minutes AS DOUBLE) IS NULL OR try_cast(delivery_minutes AS DOUBLE)>=120))
+        con.execute("""CREATE OR REPLACE TABLE stg_stores AS SELECT DISTINCT store_id,trim(store_name) store_name,upper(trim("zone")) AS zone,area,pincode,open_date,manager_name,try_cast(capacity_o        execute_sql_file(con, "elt_staging_orders.sql")   OR (upper(trim(order_status))='DELIVERED' AND (try_cast(delivery_minutes AS DOUBLE) IS NULL OR try_cast(delivery_minutes AS DOUBLE)>=120))
             THEN 'FAIL' ELSE 'PASS' END dq_status
           FROM (SELECT * FROM raw_orders QUALIFY row_number() OVER(PARTITION BY order_id ORDER BY _loaded_at DESC)=1) raw_orders""")
         # Merge increment: newest copy of an order wins in staging; raw remains append-only.
