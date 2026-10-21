@@ -380,8 +380,7 @@ def run_etl(run_id):
         stores_source=read_csv(FILES["stores"]); stores=stores_source.drop_duplicates("store_id")
         other_quarantined=quarantine_source_frames(run_id, {
             "payments.csv": payments, "customers.csv": customers_source,
-            "products.csv": products_source, "stores.csv": stores_source,
-            INCREMENT: increment_orders
+            "products.csv": products_source, "stores.csv": stores_source
         })
         issues=profile_all(run_id)
         clean,bad,order_issues=dq_orders(orders,customers,products,stores,run_id)
