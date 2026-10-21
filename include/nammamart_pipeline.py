@@ -447,12 +447,13 @@ def run_elt(run_id):
                             THEN 'Missing order_id'
                         WHEN try_cast(order_ts AS TIMESTAMP) IS NULL
                             THEN 'Invalid timestamp'
+                        WHEN try_cast(order_ts AS TIMESTAMP) > current_timestamp
+                            THEN 'Future timestamp'
                         WHEN try_cast(quantity AS INTEGER) IS NULL
                              OR try_cast(quantity AS INTEGER) <= 0
                             THEN 'Invalid quantity'
                         WHEN upper(trim(order_status)) NOT IN
-                             ('PLACED', 'CONFIRMED', 'SHIPPED', 'DELIVERED',
-                              'CANCELLED', 'RETURNED')
+                             ('DELIVERED', 'CANCELLED', 'RETURNED')
                             THEN 'Invalid order status'
                         WHEN try_cast(discount_pct AS DOUBLE) IS NULL
                              OR try_cast(discount_pct AS DOUBLE) NOT BETWEEN 0 AND 100
@@ -493,11 +494,11 @@ def run_elt(run_id):
                     CASE
                         WHEN order_id IS NULL OR trim(order_id) = ''
                           OR try_cast(order_ts AS TIMESTAMP) IS NULL
+                          OR try_cast(order_ts AS TIMESTAMP) > current_timestamp
                           OR try_cast(quantity AS INTEGER) IS NULL
                           OR try_cast(quantity AS INTEGER) <= 0
                           OR upper(trim(order_status)) NOT IN
-                             ('PLACED', 'CONFIRMED', 'SHIPPED', 'DELIVERED',
-                              'CANCELLED', 'RETURNED')
+                             ('DELIVERED', 'CANCELLED', 'RETURNED')
                           OR try_cast(discount_pct AS DOUBLE) IS NULL
                           OR try_cast(discount_pct AS DOUBLE) NOT BETWEEN 0 AND 100
                           OR try_cast(unit_price AS DOUBLE) IS NULL
